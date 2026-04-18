@@ -1,0 +1,1863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Pixlite</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=DM+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{width:100%;height:100%;overflow:hidden}
+body{font-family:'DM Sans','Helvetica Neue',sans-serif;-webkit-font-smoothing:antialiased}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useCallback, useEffect } = React;
+
+const DARK = {
+  bg:"#0f0f10", surface:"#1a1a1d", surface2:"#222226",
+  border:"rgba(255,255,255,0.08)", border2:"rgba(255,255,255,0.14)",
+  text:"#e8e8ea", textMuted:"#888890", textDim:"#55555e", accent:"#4f8ef7",
+};
+const LIGHT = {
+  bg:"#f0f0f2", surface:"#ffffff", surface2:"#f0f0f4",
+  border:"rgba(0,0,0,0.08)", border2:"rgba(0,0,0,0.14)",
+  text:"#111114", textMuted:"#666670", textDim:"#aaaabc", accent:"#3b7ef0",
+};
+const TOOLS = ["crop","resize","rotate","mirror","adjust"];
+const MIN_ZOOM=0.02, MAX_ZOOM=20, ZOOM_F=1.12;
+
+const RESOLUTIONS = [
+  { label:"Free Draw",    w:0,    h:0,    tag:"" },
+  { label:"1:1 Square",    w:1,    h:1,    tag:"social" },
+  { label:"4:3",           w:4,    h:3,    tag:"photo" },
+  { label:"3:2",           w:3,    h:2,    tag:"photo" },
+  { label:"16:9 HD",       w:1920, h:1080, tag:"video" },
+  { label:"16:9 4K",       w:3840, h:2160, tag:"video" },
+  { label:"9:16 Story",    w:1080, h:1920, tag:"social" },
+  { label:"4:5 Portrait",  w:4,    h:5,    tag:"social" },
+  { label:"2:1 Banner",    w:2,    h:1,    tag:"web" },
+  { label:"21:9 Cinema",   w:21,   h:9,    tag:"video" },
+  { label:"1280×720",      w:1280, h:720,  tag:"video" },
+  { label:"1080×1080",     w:1080, h:1080, tag:"social" },
+  { label:"1200×630",      w:1200, h:630,  tag:"web" },
+  { label:"800×600",       w:800,  h:600,  tag:"legacy" },
+  { label:"Custom…",       w:-1,   h:-1,   tag:"custom" },
+];
+const ni_base = { borderRadius:6, fontSize:13, padding:"6px 8px", width:"100%", fontFamily:"'DM Mono',monospace", outline:"none" };
+
+const ToolIcon = ({tool,active,accent,muted}) => {
+  const c = active ? accent : muted;
+  if (tool==="crop")   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={c} strokeWidth="1.5"><path d="M3 1v10a1 1 0 001 1h10M13 15V5a1 1 0 00-1-1H2"/></svg>;
+  if (tool==="resize") return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={c} strokeWidth="1.5"><rect x="1" y="1" width="8" height="8" rx="1"/><path d="M10 6h5v5M15 6l-4 4M6 10v5h5M6 15l4-4"/></svg>;
+  if (tool==="rotate") return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={c} strokeWidth="1.5"><path d="M13.5 6A6 6 0 107.5 13.9"/><path d="M13.5 2v4h-4"/></svg>;
+  if (tool==="mirror") return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={c} strokeWidth="1.5"><path d="M8 1v14"/><path d="M4 4L1 8l3 4"/><path d="M12 4l3 4-3 4"/></svg>;
+  if (tool==="adjust") return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={c} strokeWidth="1.5"><circle cx="5" cy="4" r="1.5"/><path d="M1 4h2M8 4h7"/><circle cx="11" cy="8" r="1.5"/><path d="M1 8h8M14 8h1"/><circle cx="7" cy="12" r="1.5"/><path d="M1 12h4M10 12h5"/></svg>;
+};
+
+function ImageEditor() {
+  // ── Persist settings to localStorage ─────────────────────────────────────────
+  const LS_KEY = "pixlite_settings";
+  const loadSettings = () => {
+    try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; }
+  };
+  const S = loadSettings();
+
+  // ── React state (for UI rendering only) ──────────────────────────────────────
+  const [imgSrc,   setImgSrc]   = useState(null);
+  const [lightMode,setLightMode]= useState(S.lightMode ?? false);
+  const D = lightMode ? LIGHT : DARK;
+  const ni = { ...ni_base, background:D.bg, border:`1px solid ${D.border2}`, color:D.text };
+  const [imgName,  setImgName]  = useState("");
+  const [tool,     setTool]     = useState("crop");
+  const [dropping, setDropping] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [resizeW,  setResizeW]  = useState("");
+  const [resizeH,  setResizeH]  = useState("");
+  const [lockAR,   setLockAR]   = useState(true);
+  const [imgSize,  setImgSize]  = useState({w:0,h:0});
+  const [history,  setHistory]  = useState([]);
+  const [toast,    setToast]    = useState("");
+  const [cropMode, setCropMode] = useState("resolution");
+  const [cropBox,  setCropBox]  = useState({x:0,y:0,w:0,h:0});
+  const [fixedW,   setFixedW]   = useState("");
+  const [fixedH,   setFixedH]   = useState("");
+  const [zoom,     setZoom]     = useState(1);
+  const [pan,      setPan]      = useState({x:0,y:0});
+  const [cursor,   setCursor]   = useState("default");
+  const [cvSize,   setCvSize]   = useState({w:800,h:600});
+  const [selRes,   setSelRes]   = useState(S.selRes ?? 0);
+  const [customResW, setCustomResW] = useState(S.customResW ?? "");
+  const [customResH, setCustomResH] = useState(S.customResH ?? "");
+  const [resizing, setResizing] = useState(false);
+  const [rotationDragging, setRotationDragging] = useState(false);
+  const [refImgSrc, setRefImgSrc] = useState(null); // reference image for crop framing
+  const [refImgName, setRefImgName] = useState("");
+
+  const [exportFormat, setExportFormat] = useState(S.exportFormat ?? "png");
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [exportQuality, setExportQuality] = useState(S.exportQuality ?? 92);
+  const [exportPreview, setExportPreview] = useState(null);
+  const [exportSize,    setExportSize]    = useState(null);
+  const [exportCompare,   setExportCompare]   = useState(false);
+  const [exportFmtB,      setExportFmtB]      = useState(S.exportFmtB ?? "jpg");
+  const [exportQualityB,  setExportQualityB]  = useState(S.exportQualityB ?? 80);
+  const [exportPreviewB,  setExportPreviewB]  = useState(null);
+  const [exportSizeB,     setExportSizeB]     = useState(null);
+  const [exportPan,       setExportPan]       = useState({x:0,y:0});
+  const exportDebounce  = useRef(null);
+  const exportDebounceB = useRef(null);
+  const exportPanRef    = useRef({x:0,y:0});
+  const exportDragRef   = useRef(null);
+  const exportZoomRef   = useRef(1);
+  const [exportZoom,    setExportZoom]    = useState(1);
+  const canvasARef      = useRef(null);
+  const canvasBRef      = useRef(null);
+  const imgARef         = useRef(null);
+  const imgBRef         = useRef(null);
+
+  // Adjust tool state — all values centred at 0, applied non-destructively for preview
+  const defaultAdj = { brightness:0, contrast:0, saturation:0, exposure:0, highlights:0, shadows:0, temperature:0, tint:0, sharpness:0, vignette:0 };
+  const [adj,     setAdj]     = useState(defaultAdj);
+  const [adjLive, setAdjLive] = useState(false); // preview toggle
+  const [splitCompare, setSplitCompare] = useState(true);
+  const [splitPos,     setSplitPos]     = useState(0.5); // 0–1 fraction
+  const [tick,     setTick]     = useState(0); // incremented to force re-render when refs change
+  const tickRef = useRef(0);
+  const forceTick = useCallback(() => { tickRef.current++; setTick(tickRef.current); }, []);
+
+  // ── Refs — single source of truth for all hot-path values ────────────────────
+  const wrapRef   = useRef(null);
+  const cvRef     = useRef(null);
+  const fileRef   = useRef(null);
+  const imgElRef  = useRef(null);   // offscreen Image
+  const toastTmr  = useRef(null);
+  const rafRef    = useRef(null);
+
+  // live copies of state for use inside event handlers (no stale closures)
+  const zoomR     = useRef(1);
+  const panR      = useRef({x:0,y:0});
+  const imgSizeR  = useRef({w:0,h:0});
+  const toolR     = useRef("crop");
+  const cropModeR = useRef("resolution");
+  const cropBoxR  = useRef({x:0,y:0,w:0,h:0});
+  const selResR   = useRef(S.selRes ?? 0);
+  const customResR = useRef({w: S.customResW ?? "", h: S.customResH ?? ""});
+  const rotationR = useRef(0);
+  const lightModeR= useRef(false);
+  const adjR      = useRef(defaultAdj);
+  const adjLiveR  = useRef(false);
+  const splitPosR     = useRef(0.5);
+  const splitCompareR = useRef(true);
+  const splitDragRef  = useRef(false);
+  const beforeZoomRef = useRef(1); // zoom level when split compare was turned on
+
+  // interaction state — entirely in refs so handlers always see current values
+  const dragR = useRef(null);
+  const beforeImgRef = useRef(null); // holds decoded "before" image for split compare
+  const refImgElRef  = useRef(null); // reference image for crop overlay
+  // dragR.current = null | { kind: "pan", sx,sy,px,py }
+  //               | { kind: "crop-draw", sx,sy }
+  //               | { kind: "crop-move", sx,sy, b0 }
+  //               | { kind: "crop-handle", name, sx,sy, b0 }
+
+  // keep refs in sync with state
+  useEffect(() => { zoomR.current = zoom; }, [zoom]);
+  useEffect(() => { panR.current = pan; }, [pan]);
+  useEffect(() => { imgSizeR.current = imgSize; }, [imgSize]);
+  useEffect(() => { toolR.current = tool; }, [tool]);
+  useEffect(() => { cropModeR.current = cropMode; }, [cropMode]);
+  useEffect(() => { cropBoxR.current = cropBox; }, [cropBox]);
+  useEffect(() => { selResR.current = selRes; }, [selRes]);
+  useEffect(() => { rotationR.current = rotation; scheduleDraw(); }, [rotation]);
+  useEffect(() => { lightModeR.current = lightMode; scheduleDraw(); }, [lightMode]);
+  useEffect(() => { adjR.current = adj; if (adjLiveR.current || splitCompareR.current) scheduleDraw(); }, [adj]);
+  useEffect(() => { adjLiveR.current = adjLive; scheduleDraw(); }, [adjLive]);
+  useEffect(() => { splitPosR.current = splitPos; scheduleDraw(); }, [splitPos]);
+  useEffect(() => { splitCompareR.current = splitCompare; if(!splitCompare) scheduleDraw(); }, [splitCompare]);
+
+  // ── Persist settings whenever they change ────────────────────────────────────
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        lightMode, exportFormat, exportQuality,
+        exportFmtB, exportQualityB,
+        selRes, customResW, customResH,
+      }));
+    } catch {}
+  }, [lightMode, exportFormat, exportQuality, exportFmtB, exportQualityB, selRes, customResW, customResH]);
+
+  // Re-snapshot before image when switching to adjust tool (so it reflects current state)
+  useEffect(() => {
+    if (tool !== "adjust" && tool !== "resize") return;
+    if (!splitCompareR.current) return;
+    const src = imgElRef.current;
+    if (!src || !src.naturalWidth) return;
+    beforeZoomRef.current = zoomR.current;
+    const c = document.createElement("canvas");
+    c.width = src.naturalWidth; c.height = src.naturalHeight;
+    c.getContext("2d").drawImage(src, 0, 0);
+    const snap = new Image();
+    snap.onload = () => { beforeImgRef.current = snap; scheduleDraw(); };
+    snap.src = c.toDataURL("image/png");
+  }, [tool]);
+
+  // When split compare is turned on, snapshot the current image as "before"
+  useEffect(() => {
+    if (!splitCompare) { beforeImgRef.current = null; scheduleDraw(); return; }
+    const src = imgElRef.current;
+    if (!src || !src.naturalWidth) return;
+    // Snapshot zoom at this moment — before image should be drawn at this zoom
+    beforeZoomRef.current = zoomR.current;
+    // Clone into independent Image so it isn't affected by later imgElRef updates
+    const c = document.createElement("canvas");
+    c.width = src.naturalWidth; c.height = src.naturalHeight;
+    c.getContext("2d").drawImage(src, 0, 0);
+    const snap = new Image();
+    snap.onload = () => { beforeImgRef.current = snap; scheduleDraw(); };
+    snap.src = c.toDataURL("image/png");
+  }, [splitCompare]);
+
+  const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
+
+  // Apply all adjustments to a canvas 2d context's pixel data
+  const applyAdjToCtx = (ctx, a, w, h) => {
+    const id = ctx.getImageData(0,0,w,h);
+    const d  = id.data;
+    const {brightness,contrast,saturation,exposure,highlights,shadows,temperature,tint,vignette} = a;
+
+    // Pre-compute LUT for brightness/contrast/exposure (per-channel)
+    const lut = new Uint8ClampedArray(256);
+    for (let i=0;i<256;i++) {
+      let v = i/255;
+      // exposure (in stops)
+      v *= Math.pow(2, exposure*0.5);
+      // brightness [-1..1]
+      v += brightness * 0.4;
+      // contrast [-1..1]: S-curve
+      const cf = 1 + contrast * 0.8;
+      v = (v - 0.5) * cf + 0.5;
+      lut[i] = clamp(Math.round(v*255),0,255);
+    }
+
+    for (let i=0;i<d.length;i+=4) {
+      let r=d[i], g=d[i+1], b=d[i+2];
+
+      // LUT (brightness/contrast/exposure)
+      r=lut[r]; g=lut[g]; b=lut[b];
+
+      // temperature: shift red/blue channels
+      if (temperature!==0) {
+        const t=temperature*0.5;
+        r=clamp(r+t,0,255); b=clamp(b-t,0,255);
+      }
+      // tint: shift green/magenta
+      if (tint!==0) {
+        const t=tint*0.4;
+        g=clamp(g+t,0,255);
+        r=clamp(r-t*0.3,0,255); b=clamp(b-t*0.3,0,255);
+      }
+      // saturation: convert to HSL, adjust S
+      if (saturation!==0) {
+        const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+        const l=(mx+mn)/2;
+        if (mx!==mn) {
+          const sf = 1 + saturation * 0.8;
+          r = clamp(Math.round(l+(r-l)*sf),0,255);
+          g = clamp(Math.round(l+(g-l)*sf),0,255);
+          b = clamp(Math.round(l+(b-l)*sf),0,255);
+        }
+      }
+      // highlights [-1..1]: affect bright pixels
+      if (highlights!==0) {
+        const lum=(r+g+b)/765; // 0..1
+        const hf = highlights * lum * lum * 80;
+        r=clamp(r+hf,0,255); g=clamp(g+hf,0,255); b=clamp(b+hf,0,255);
+      }
+      // shadows [-1..1]: affect dark pixels
+      if (shadows!==0) {
+        const lum=(r+g+b)/765;
+        const sf = shadows * (1-lum) * (1-lum) * 80;
+        r=clamp(r+sf,0,255); g=clamp(g+sf,0,255); b=clamp(b+sf,0,255);
+      }
+
+      d[i]=r; d[i+1]=g; d[i+2]=b;
+    }
+
+    // Vignette: radial gradient darkening (post pixel-loop, use composite)
+    ctx.putImageData(id,0,0);
+    if (vignette!==0) {
+      const cx=w/2, cy=h/2, r=Math.sqrt(cx*cx+cy*cy);
+      const grad=ctx.createRadialGradient(cx,cy,r*0.3,cx,cy,r*1.1);
+      const alpha=clamp(vignette*0.7,0,0.92);
+      grad.addColorStop(0,'rgba(0,0,0,0)');
+      grad.addColorStop(1,`rgba(0,0,0,${alpha})`);
+      ctx.fillStyle=grad;
+      ctx.fillRect(0,0,w,h);
+    }
+  };
+
+  const showToast = (msg) => {
+    setToast(msg);
+    clearTimeout(toastTmr.current);
+    toastTmr.current = setTimeout(()=>setToast(""), 2000);
+  };
+
+  // ── canvas draw ───────────────────────────────────────────────────────────────
+
+  const draw = useCallback(() => {
+    const cv  = cvRef.current;
+    const img = imgElRef.current;
+    if (!cv || !img || !img.complete || !img.naturalWidth) return;
+    const ctx = cv.getContext("2d");
+    const cw=cv.width, ch=cv.height;
+    const z=zoomR.current, px=panR.current.x, py=panR.current.y;
+    const iw=img.naturalWidth, ih=img.naturalHeight;
+    const rad=rotationR.current*Math.PI/180;
+    const cos=Math.abs(Math.cos(rad)), sin=Math.abs(Math.sin(rad));
+    // displayed size accounts for rotation bounding box
+    const dw=(iw*cos+ih*sin)*z, dh=(iw*sin+ih*cos)*z;
+    const cx2=cw/2+px, cy2=ch/2+py;
+
+    const theme = lightModeR.current ? LIGHT : DARK;
+    ctx.clearRect(0,0,cw,ch);
+    ctx.fillStyle=theme.bg; ctx.fillRect(0,0,cw,ch);
+
+    // checker only when no rotation
+    if (rad===0) {
+      const il=cx2-dw/2, it=cy2-dh/2;
+      const sq=12;
+      for(let r=Math.floor(it/sq); r*sq<it+dh; r++){
+        for(let c=Math.floor(il/sq); c*sq<il+dw; c++){
+          const x=c*sq, y=r*sq;
+          const x1=clamp(x,il,il+dw), y1=clamp(y,it,it+dh);
+          const w2=clamp(x+sq,il,il+dw)-x1, h2=clamp(y+sq,it,it+dh)-y1;
+          ctx.fillStyle=lightModeR.current
+            ? ((r+c)%2===0?"#e8e8ee":"#d8d8e2")
+            : ((r+c)%2===0?"#1e1e22":"#2a2a2f");
+          ctx.fillRect(x1,y1,w2,h2);
+        }
+      }
+      ctx.drawImage(img,il,it,dw,dh);
+    } else {
+      ctx.save();
+      ctx.translate(cx2,cy2);
+      ctx.rotate(rad);
+      ctx.drawImage(img,-iw*z/2,-ih*z/2,iw*z,ih*z);
+      ctx.restore();
+    }
+
+    // Reference image overlay (crop tool only) — drawn inside the crop box at 42% opacity
+    if (toolR.current === "crop" && refImgElRef.current && rotationR.current === 0) {
+      const ref = refImgElRef.current;
+      const cb2 = cropBoxR.current;
+      if (cb2.w > 0 && cb2.h > 0) {
+        // Image top-left in canvas coords (same formula as the checker/draw above)
+        const imgLeft = cx2 - dw/2;
+        const imgTop  = cy2 - dh/2;
+        // Map crop box from image coords to canvas coords
+        const bx  = imgLeft + cb2.x * z;
+        const by  = imgTop  + cb2.y * z;
+        const bw2 = cb2.w * z;
+        const bh2 = cb2.h * z;
+        // Scale ref image to cover the crop box (object-cover style)
+        const rw2 = ref.naturalWidth, rh2 = ref.naturalHeight;
+        const scale = Math.max(bw2 / rw2, bh2 / rh2);
+        const rdw = rw2 * scale, rdh = rh2 * scale;
+        const rox = bx + (bw2 - rdw) / 2;
+        const roy = by + (bh2 - rdh) / 2;
+        ctx.save();
+        ctx.globalAlpha = 0.42;
+        ctx.beginPath(); ctx.rect(bx, by, bw2, bh2); ctx.clip();
+        ctx.drawImage(ref, rox, roy, rdw, rdh);
+        ctx.restore();
+      }
+    }
+
+    // Apply adjustments as live preview if enabled (non-split mode)
+    if (adjLiveR.current && !splitCompareR.current) {
+      const a = adjR.current;
+      const hasAdj = Object.values(a).some(v=>v!==0);
+      if (hasAdj) applyAdjToCtx(ctx, a, cw, ch);
+    }
+
+    // Split compare: draw "before" on left, "after" on right
+    if (splitCompareR.current && (toolR.current==="adjust" || toolR.current==="resize")) {
+      const splitX = Math.round(splitPosR.current * cw);
+      const beforeImg = beforeImgRef.current;
+      if (beforeImg) {
+        // Draw before image clipped to left of split, using the zoom from when compare was toggled
+        const bz = beforeZoomRef.current;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(0, 0, splitX, ch); ctx.clip();
+        ctx.clearRect(0,0,splitX,ch);
+        ctx.fillStyle=theme.bg; ctx.fillRect(0,0,splitX,ch);
+        const bIw=beforeImg.naturalWidth, bIh=beforeImg.naturalHeight;
+        const bDw=(bIw*cos+bIh*sin)*bz, bDh=(bIw*sin+bIh*cos)*bz;
+        if (rad===0) ctx.drawImage(beforeImg, cx2-bDw/2, cy2-bDh/2, bDw, bDh);
+        else { ctx.save(); ctx.translate(cx2,cy2); ctx.rotate(rad); ctx.drawImage(beforeImg,-bIw*bz/2,-bIh*bz/2,bIw*bz,bIh*bz); ctx.restore(); }
+        ctx.restore();
+      }
+      // For adjust: apply adjustments clipped to right of split
+      if (toolR.current==="adjust") {
+        ctx.save();
+        ctx.beginPath(); ctx.rect(splitX, 0, cw-splitX, ch); ctx.clip();
+        const a = adjR.current;
+        const hasAdj = Object.values(a).some(v=>v!==0);
+        if (hasAdj) applyAdjToCtx(ctx, a, cw, ch);
+        ctx.restore();
+      }
+      // For resize: right side already shows the current (resized) img — nothing extra needed
+    }
+  }, []);
+
+  const scheduleDraw = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(draw);
+  }, [draw]);
+
+  useEffect(()=>{ scheduleDraw(); }, [zoom, pan, imgSrc, cvSize, refImgSrc, cropBox, scheduleDraw]);
+
+  // resize observer
+  useEffect(()=>{
+    const el=wrapRef.current; if(!el) return;
+    const ro=new ResizeObserver(entries=>{
+      const {width,height}=entries[0].contentRect;
+      setCvSize({w:Math.round(width),h:Math.round(height)});
+    });
+    ro.observe(el);
+    return ()=>ro.disconnect();
+  },[]);
+
+  // ── coordinate helpers ────────────────────────────────────────────────────────
+  // All mouse events fire on wrapRef. wrapRef and cvRef are the same size.
+  // Convert wrapRef-relative point → image pixel coords.
+
+  const wrapPt = (e) => {
+    const r=wrapRef.current.getBoundingClientRect();
+    return {x:e.clientX-r.left, y:e.clientY-r.top};
+  };
+
+  const ptToImg = (wx,wy) => {
+    const cv=cvRef.current; if(!cv) return {x:0,y:0};
+    // wrapRef CSS px == canvas CSS px (same element size), but canvas pixel coords
+    // may differ if devicePixelRatio != 1. We set canvas.width = offsetWidth so 1:1.
+    const z=zoomR.current, p=panR.current, s=imgSizeR.current;
+    const il = cv.width/2  + p.x - s.w*z/2;
+    const it = cv.height/2 + p.y - s.h*z/2;
+    return { x:(wx-il)/z, y:(wy-it)/z };
+  };
+
+  // image pixel → wrapRef CSS px (for SVG overlay)
+  const imgToWrap = (ix,iy) => {
+    const cv=cvRef.current; if(!cv) return {x:0,y:0};
+    const z=zoom, p=pan, s=imgSize;
+    const il = cv.width/2  + p.x - s.w*z/2;
+    const it = cv.height/2 + p.y - s.h*z/2;
+    return { x:il+ix*z, y:it+iy*z };
+  };
+
+  // ── unified mouse handler ─────────────────────────────────────────────────────
+
+  const handleMouseDown = useCallback((e) => {
+    if (!imgSrc) return;
+
+    // right-click or middle-click → pan
+    if (e.button===2 || e.button===1) {
+      e.preventDefault();
+      const p=panR.current;
+      dragR.current = {kind:"pan", sx:e.clientX, sy:e.clientY, px:p.x, py:p.y};
+      setCursor("grabbing");
+      return;
+    }
+
+    if (e.button!==0) return;
+
+    // split compare bar drag — intercept before other tools
+    if (splitCompareR.current && (toolR.current==="adjust" || toolR.current==="resize")) {
+      e.preventDefault();
+      dragR.current = {kind:"split-drag"};
+      splitDragRef.current = true;
+      return;
+    }
+
+    // rotate tool — drag to rotate around image center
+    if (toolR.current==="rotate") {
+      e.preventDefault();
+      const wrap=wrapRef.current;
+      const r=wrap.getBoundingClientRect();
+      const mx=e.clientX-r.left, my=e.clientY-r.top;
+      const cx=wrap.offsetWidth/2+panR.current.x;
+      const cy=wrap.offsetHeight/2+panR.current.y;
+      const startAngle=Math.atan2(my-cy, mx-cx)*180/Math.PI;
+      dragR.current={kind:"rotate-drag", cx, cy, lastAngle:startAngle, totalRotation:rotationR.current};
+      setRotationDragging(true);
+      return;
+    }
+
+    // measure tool — click to add calibration or path points
+    if (toolR.current!=="crop") return;
+    e.preventDefault();
+
+    const wp=wrapPt(e);
+    const {x:ix,y:iy}=ptToImg(wp.x,wp.y);
+    const z=zoomR.current;
+    const cb=cropBoxR.current;
+    const tol=8/z;
+
+    if (cropModeR.current==="resolution") {
+      const isFree = selResR.current===0;
+      // check handles
+      const {x,y,w,h}=cb;
+      const hlist=[["nw",x,y],["n",x+w/2,y],["ne",x+w,y],["e",x+w,y+h/2],
+                   ["se",x+w,y+h],["s",x+w/2,y+h],["sw",x,y+h],["w",x,y+h/2]];
+      for (const [name,hx,hy] of hlist) {
+        if (Math.abs(ix-hx)<tol && Math.abs(iy-hy)<tol) {
+          dragR.current={kind:"crop-handle",name,sx:ix,sy:iy,b0:{...cb}};
+          return;
+        }
+      }
+      // inside box → move
+      if (ix>=cb.x&&ix<=cb.x+cb.w&&iy>=cb.y&&iy<=cb.y+cb.h) {
+        dragR.current={kind:"crop-move",sx:ix,sy:iy,b0:{...cb}};
+        return;
+      }
+      // outside → draw new (always allowed — for preset modes it will lock AR)
+      const s=imgSizeR.current;
+      const nx=clamp(ix,0,s.w), ny=clamp(iy,0,s.h);
+      dragR.current={kind:"crop-draw",sx:nx,sy:ny};
+      setCropBox({x:nx,y:ny,w:0,h:0});
+      cropBoxR.current={x:nx,y:ny,w:0,h:0};
+    }
+  }, [imgSrc]);
+
+  const handleMouseMove = useCallback((e) => {
+    const d=dragR.current;
+    if (!d) return;
+
+    if (d.kind==="split-drag") {
+      const wrap=wrapRef.current; if(!wrap) return;
+      const r=wrap.getBoundingClientRect();
+      const x=e.clientX-r.left;
+      const newPos=Math.max(0.02, Math.min(0.98, x/wrap.offsetWidth));
+      splitPosR.current=newPos; setSplitPos(newPos);
+      return;
+    }
+
+    if (d.kind==="pan") {
+      const npx=d.px+(e.clientX-d.sx);
+      const npy=d.py+(e.clientY-d.sy);
+      panR.current={x:npx,y:npy};
+      scheduleDraw();
+      forceTick();
+      return;
+    }
+
+    if (d.kind==="rotate-drag") {
+      const wrap=wrapRef.current; if (!wrap) return;
+      const r=wrap.getBoundingClientRect();
+      const mx=e.clientX-r.left, my=e.clientY-r.top;
+      const currentAngle=Math.atan2(my-d.cy, mx-d.cx)*180/Math.PI;
+      // incremental delta from last frame — avoids wrap-snap
+      let delta=currentAngle-d.lastAngle;
+      // unwrap: if delta jumps more than 180° it crossed the ±180 boundary
+      if (delta>180) delta-=360;
+      if (delta<-180) delta+=360;
+      // accumulate total rotation (unclamped) then fold to [-180,180] for display
+      const newTotal=d.totalRotation+delta;
+      const clamped=((newTotal%360)+540)%360-180; // fold to [-180,180] smoothly
+      // update drag state for next frame
+      dragR.current={...d, lastAngle:currentAngle, totalRotation:newTotal};
+      rotationR.current=Math.round(clamped);
+      setRotation(Math.round(clamped));
+      return;
+    }
+
+    const wp=wrapPt(e);
+    const {x:ix,y:iy}=ptToImg(wp.x,wp.y);
+    const s=imgSizeR.current;
+    const W=s.w, H=s.h;
+
+    if (d.kind==="crop-draw") {
+      const isRes = selResR.current!==0;
+      const res = isRes ? RESOLUTIONS[selResR.current] : null;
+      let ar = null;
+      if (isRes && res) {
+        if (res.w === -1) {
+          const cw = parseInt(customResR.current.w), ch = parseInt(customResR.current.h);
+          if (cw > 0 && ch > 0) ar = cw / ch;
+        } else if (res.w && res.h) {
+          ar = res.w / res.h;
+        }
+      }
+
+      // raw unclamped deltas from drag start
+      const rawDx = ix - d.sx;
+      const rawDy = iy - d.sy;
+
+      let w = Math.abs(rawDx);
+      let h = Math.abs(rawDy);
+
+      if (ar) {
+        // lock to aspect ratio using whichever axis is larger
+        if (w / ar >= h) { h = w / ar; } else { w = h * ar; }
+        // fit within image bounds proportionally
+        const maxW = rawDx >= 0 ? W - d.sx : d.sx;
+        const maxH = rawDy >= 0 ? H - d.sy : d.sy;
+        const scale = Math.min(1, maxW / w, maxH / h);
+        w *= scale; h *= scale;
+      } else {
+        // free draw — just clamp independently
+        w = rawDx >= 0 ? Math.min(w, W - d.sx) : Math.min(w, d.sx);
+        h = rawDy >= 0 ? Math.min(h, H - d.sy) : Math.min(h, d.sy);
+      }
+
+      // anchor corner based on drag direction
+      const x = rawDx >= 0 ? d.sx : d.sx - w;
+      const y = rawDy >= 0 ? d.sy : d.sy - h;
+
+      const nb = { x: clamp(x,0,W), y: clamp(y,0,H), w: Math.round(w), h: Math.round(h) };
+      cropBoxR.current=nb; setCropBox(nb); forceTick(); scheduleDraw();
+      return;
+    }
+    if (d.kind==="crop-move") {
+      const b=d.b0;
+      const nx=clamp(b.x+(ix-d.sx),0,W-b.w), ny=clamp(b.y+(iy-d.sy),0,H-b.h);
+      const nb={...b,x:nx,y:ny};
+      cropBoxR.current=nb; setCropBox(nb); forceTick(); scheduleDraw();
+      return;
+    }
+    if (d.kind==="crop-handle") {
+      const b=d.b0, dx=ix-d.sx, dy=iy-d.sy;
+      let {x,y,w,h}=b;
+      const isRes = selResR.current!==0;
+      const res = isRes ? RESOLUTIONS[selResR.current] : null;
+      let ar = null;
+      if (isRes && res) {
+        if (res.w === -1) {
+          const cw = parseInt(customResR.current.w), ch = parseInt(customResR.current.h);
+          if (cw > 0 && ch > 0) ar = cw / ch;
+        } else if (res.w && res.h) {
+          ar = res.w / res.h;
+        }
+      }
+
+      if(d.name.includes("e")) w=clamp(b.w+dx,1,W-x);
+      if(d.name.includes("s")) h=clamp(b.h+dy,1,H-y);
+      if(d.name.includes("w")){const nw=clamp(b.w-dx,1,b.x+b.w);x=b.x+b.w-nw;w=nw;}
+      if(d.name.includes("n")){const nh=clamp(b.h-dy,1,b.y+b.h);y=b.y+b.h-nh;h=nh;}
+
+      if (ar) {
+        const hname=d.name;
+        // derive the other axis from the one that was moved
+        if (hname==="n"||hname==="s") { w=h*ar; }
+        else if (hname==="e"||hname==="w") { h=w/ar; }
+        else { if (Math.abs(dx)>=Math.abs(dy)) h=w/ar; else w=h*ar; }
+
+        // re-anchor west/north edges
+        if(hname.includes("w")) x=b.x+b.w-w;
+        if(hname.includes("n")) y=b.y+b.h-h;
+
+        // fit proportionally — don't clamp w and h independently (that breaks ratio)
+        const maxW = W - x, maxH = H - y;
+        if (w > maxW || h > maxH) {
+          const scale = Math.min(maxW/w, maxH/h);
+          w *= scale; h *= scale;
+          if(hname.includes("w")) x=b.x+b.w-w;
+          if(hname.includes("n")) y=b.y+b.h-h;
+        }
+        x=clamp(x,0,W-w); y=clamp(y,0,H-h);
+        w=Math.max(1,Math.round(w)); h=Math.max(1,Math.round(h));
+      } else {
+        x=clamp(x,0,W-w); y=clamp(y,0,H-h);
+        w=clamp(w,1,W-x); h=clamp(h,1,H-y);
+      }
+
+      const nb={x,y,w,h};
+      cropBoxR.current=nb; setCropBox(nb); forceTick(); scheduleDraw();
+    }
+  }, []);
+
+  const handleMouseUp = useCallback(() => {
+    if (dragR.current?.kind==="pan") setCursor("default");
+    if (dragR.current?.kind==="rotate-drag") setRotationDragging(false);
+    if (dragR.current?.kind==="split-drag") splitDragRef.current=false;
+    dragR.current=null;
+  }, []);
+
+  const handleContextMenu = (e) => e.preventDefault();
+
+  // ── wheel zoom ────────────────────────────────────────────────────────────────
+
+  const handleWheel = useCallback((e) => {
+    if (!imgSrc) return;
+    e.preventDefault();
+    const wrap=wrapRef.current;
+    const r=wrap.getBoundingClientRect();
+    const mx=e.clientX-r.left-wrap.offsetWidth/2;
+    const my=e.clientY-r.top -wrap.offsetHeight/2;
+    const factor=e.deltaY<0?ZOOM_F:1/ZOOM_F;
+    const prev=zoomR.current;
+    const next=clamp(prev*factor,MIN_ZOOM,MAX_ZOOM);
+    const ratio=next/prev;
+    const p=panR.current;
+    const npx=mx+(p.x-mx)*ratio, npy=my+(p.y-my)*ratio;
+    zoomR.current=next; panR.current={x:npx,y:npy};
+    if (splitCompareR.current) beforeZoomRef.current *= ratio;
+    setZoom(next); forceTick();
+  }, [imgSrc]);
+
+  useEffect(()=>{
+    const el=wrapRef.current; if(!el) return;
+    el.addEventListener("wheel",handleWheel,{passive:false});
+    return ()=>el.removeEventListener("wheel",handleWheel);
+  },[handleWheel]);
+
+  // ── zoom controls ─────────────────────────────────────────────────────────────
+
+  const setZoomCentered = (z) => {
+    const ratio = z / zoomR.current;
+    if (splitCompareR.current) beforeZoomRef.current *= ratio;
+    zoomR.current=z; panR.current={x:0,y:0};
+    setZoom(z); scheduleDraw(); forceTick();
+  };
+  const zoom100 = () => setZoomCentered(1);
+  const zoomFit = () => {
+    const cv=cvRef.current; if(!cv||!imgSize.w) return;
+    setZoomCentered(Math.min((cv.width-40)/imgSize.w,(cv.height-40)/imgSize.h));
+  };
+  const zoomIn  = () => setZoomCentered(clamp(zoomR.current*ZOOM_F,MIN_ZOOM,MAX_ZOOM));
+  const zoomOut = () => setZoomCentered(clamp(zoomR.current/ZOOM_F,MIN_ZOOM,MAX_ZOOM));
+
+  // ── image operations ──────────────────────────────────────────────────────────
+
+  const drawOp = (src,fn) => { const i=new Image(); i.onload=()=>fn(i); i.src=src; };
+
+  const commit = (url,w,h,msg) => {
+    const img=new Image();
+    img.onload=()=>{ imgElRef.current=img; scheduleDraw(); };
+    img.src=url;
+    // Scale zoom so the image occupies the same apparent screen size after resize.
+    // Draw formula: imageScreenSize = imgPixels * zoom
+    // To keep imageScreenSize constant: newZoom = oldZoom * (oldW / newW)
+    // Pan is a viewport-center offset in screen pixels — it does NOT need scaling.
+    const oldW = imgSizeR.current.w || w;
+    const newZoom = zoomR.current * (oldW / w);
+    zoomR.current = newZoom;
+    setZoom(newZoom);
+    imgSizeR.current={w,h};
+    setImgSrc(url); setImgSize({w,h});
+    setResizeW(String(w)); setResizeH(String(h));
+    const nb={x:0,y:0,w,h}; setCropBox(nb); cropBoxR.current=nb;
+    setHistory(hh=>[...hh,url]);
+    showToast(msg);
+  };
+
+  const loadFile = (file) => {
+    if (!file||!file.type.startsWith("image/")) return;
+    const reader=new FileReader();
+    reader.onload=(e)=>{
+      const img=new Image();
+      img.onload=()=>{
+        const {naturalWidth:w,naturalHeight:h}=img;
+        // Compute fit zoom now using wrapRef (always mounted), before any state update.
+        // This means the very first render already has correct zoom/pan so the
+        // crop overlay aligns immediately — no second-frame correction needed.
+        const wrap=wrapRef.current;
+        const fz = wrap
+          ? Math.min((wrap.offsetWidth-40)/w,(wrap.offsetHeight-40)/h)
+          : 1;
+        zoomR.current=fz; panR.current={x:0,y:0};
+        imgElRef.current=img; imgSizeR.current={w,h};
+        const nb={x:0,y:0,w,h}; cropBoxR.current=nb;
+        // Now set all state in one batch — React 18 batches these automatically
+        setZoom(fz); forceTick();
+        setImgSrc(e.target.result); setImgName(file.name);
+        setImgSize({w,h}); setResizeW(String(w)); setResizeH(String(h));
+        setRotation(0); setHistory([e.target.result]);
+        setCropBox(nb);
+        // Enable split compare by default and snapshot the freshly loaded image as "before"
+        setSplitCompare(true); splitCompareR.current=true;
+        beforeZoomRef.current=fz;
+        const snap=new Image(); snap.onload=()=>{ beforeImgRef.current=snap; };
+        snap.src=e.target.result;
+        showToast("Image loaded");
+      };
+      img.src=e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const loadRefImage = (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        refImgElRef.current = img;
+        setRefImgSrc(e.target.result);
+        setRefImgName(file.name);
+        // Set the crop box AR to match the reference image, centered
+        const iw = imgSizeR.current.w, ih = imgSizeR.current.h;
+        if (iw && ih) {
+          const ar = img.naturalWidth / img.naturalHeight;
+          let bw, bh;
+          if (iw / ih >= ar) { bh = ih; bw = Math.round(bh * ar); }
+          else               { bw = iw; bh = Math.round(bw / ar); }
+          const nb = { x: Math.round((iw - bw) / 2), y: Math.round((ih - bh) / 2), w: bw, h: bh };
+          setCropBox(nb); cropBoxR.current = nb;
+          // Also update selRes to Custom and store the ref dimensions
+          const customIdx = RESOLUTIONS.length - 1;
+          setSelRes(customIdx); selResR.current = customIdx;
+          const rw = String(img.naturalWidth), rh = String(img.naturalHeight);
+          setCustomResW(rw); setCustomResH(rh);
+          customResR.current = { w: rw, h: rh };
+        }
+        forceTick();
+        scheduleDraw();
+        showToast("Reference image loaded");
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDrop  = useCallback((e)=>{
+    e.preventDefault(); setDropping(false);
+    const file = e.dataTransfer.files[0];
+    // If a main image is loaded and we're on the crop tool, treat as reference image
+    if (imgSrc && toolR.current === "crop") {
+      loadRefImage(file);
+    } else {
+      loadFile(file);
+    }
+  },[imgSrc]);
+  const handleDragO = (e)=>{ e.preventDefault(); setDropping(true); };
+  const handleDragL = ()=>setDropping(false);
+  const handleFile  = (e)=>{ loadFile(e.target.files[0]); e.target.value=""; };
+
+  const applyRotation = () => drawOp(imgSrc,(img)=>{
+    const rad=rotation*Math.PI/180, cos=Math.abs(Math.cos(rad)), sin=Math.abs(Math.sin(rad));
+    const nw=Math.round(img.height*sin+img.width*cos), nh=Math.round(img.height*cos+img.width*sin);
+    const c=document.createElement("canvas"); c.width=nw; c.height=nh;
+    const ctx=c.getContext("2d"); ctx.translate(nw/2,nh/2); ctx.rotate(rad); ctx.drawImage(img,-img.width/2,-img.height/2);
+    setRotation(0); commit(c.toDataURL("image/png"),nw,nh,"Rotation applied");
+  });
+
+  const applyMirror = (axis) => {
+    const img = imgElRef.current;
+    if (!img) return;
+    const w=img.naturalWidth, h=img.naturalHeight;
+    const c=document.createElement("canvas"); c.width=w; c.height=h;
+    const ctx=c.getContext("2d");
+    if (axis==="h") { ctx.translate(w,0); ctx.scale(-1,1); }
+    else             { ctx.translate(0,h); ctx.scale(1,-1); }
+    ctx.drawImage(img,0,0);
+    // Reuse the canvas as the display image directly — no re-decode needed
+    const newImg=new Image();
+    const url=c.toDataURL("image/png");
+    newImg.onload=()=>{ imgElRef.current=newImg; scheduleDraw(); };
+    newImg.src=url;
+    imgSizeR.current={w,h};
+    setImgSrc(url); setImgSize({w,h});
+    setResizeW(String(w)); setResizeH(String(h));
+    const nb={x:0,y:0,w,h}; setCropBox(nb); cropBoxR.current=nb;
+    setHistory(hh=>[...hh,url]);
+    showToast(axis==="h"?"Flipped horizontally":"Flipped vertically");
+  };
+
+  // Multi-pass stepped scale — upscales in ≤2× steps for quality,
+  // downscales in ≥0.5× steps. Works for both upscale and downscale.
+  const steppedScale = (sourceCanvas, targetW, targetH) => {
+    let curW = sourceCanvas.width, curH = sourceCanvas.height;
+    let cur = sourceCanvas;
+    while (curW !== targetW || curH !== targetH) {
+      const nextW = curW < targetW ? Math.min(curW * 2, targetW) : Math.max(Math.floor(curW / 2), targetW);
+      const nextH = curH < targetH ? Math.min(curH * 2, targetH) : Math.max(Math.floor(curH / 2), targetH);
+      const next = document.createElement("canvas");
+      next.width = nextW; next.height = nextH;
+      const ctx = next.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(cur, 0, 0, nextW, nextH);
+      cur = next; curW = nextW; curH = nextH;
+    }
+    return cur;
+  };
+
+  const applyAdjustments = () => {
+    const hasAdj = Object.values(adj).some(v=>v!==0);
+    if (!hasAdj) return;
+    drawOp(imgSrc,(img)=>{
+      const w=img.naturalWidth, h=img.naturalHeight;
+      const c=document.createElement("canvas"); c.width=w; c.height=h;
+      const ctx=c.getContext("2d");
+      ctx.drawImage(img,0,0);
+      applyAdjToCtx(ctx,adj,w,h);
+      commit(c.toDataURL("image/png"),w,h,"Adjustments applied");
+      setAdj(defaultAdj); adjR.current=defaultAdj;
+      setAdjLive(false); adjLiveR.current=false;
+    });
+  };
+
+  const applyResize = () => {
+    const w = parseInt(resizeW), h = parseInt(resizeH);
+    if (!w || !h) return;
+    setResizing(true);
+    drawOp(imgSrc, (img) => {
+      const src = document.createElement("canvas");
+      src.width = img.naturalWidth; src.height = img.naturalHeight;
+      src.getContext("2d").drawImage(img, 0, 0);
+      const result = steppedScale(src, w, h);
+      commit(result.toDataURL("image/png"), w, h, `Resized to ${w}×${h}`);
+      setResizing(false);
+    });
+  };
+
+  const applyCrop = () => {
+    const {x,y,w,h} = cropBox; if (w<1||h<1) return;
+    drawOp(imgSrc, (img) => {
+      const c = document.createElement("canvas"); c.width=w; c.height=h;
+      c.getContext("2d").drawImage(img, x, y, w, h, 0, 0, w, h);
+      commit(c.toDataURL("image/png"), w, h, "Crop applied");
+    });
+  };
+
+  // Crop then scale to exact target resolution — uses stepped scaling so it
+  // handles both upscale (crop smaller than target) and downscale correctly.
+  const applyCropAndResize = () => {
+    const {x,y,w,h} = cropBox; if (w<1||h<1) return;
+    const res = RESOLUTIONS[selRes]; if (!res) return;
+    // Resolve effective dimensions (custom preset reads from ref)
+    let rw = res.w, rh = res.h;
+    if (res.w === -1) {
+      rw = parseInt(customResR.current.w);
+      rh = parseInt(customResR.current.h);
+    }
+    if (!rw || !rh) return;
+    const isRatioOnly = rw<=100 && rh<=100;
+    let tw, th;
+    if (isRatioOnly) {
+      const iw=imgSizeR.current.w, ih=imgSizeR.current.h;
+      const ar=rw/rh;
+      if (iw/ih>=ar) { th=ih; tw=Math.round(ih*ar); }
+      else            { tw=iw; th=Math.round(iw/ar); }
+    } else {
+      tw=rw; th=rh;
+    }
+    setResizing(true);
+    drawOp(imgSrc, (img) => {
+      const cropped=document.createElement("canvas"); cropped.width=w; cropped.height=h;
+      cropped.getContext("2d").drawImage(img,x,y,w,h,0,0,w,h);
+      const result=steppedScale(cropped,tw,th);
+      const dir=(w<tw||h<th)?"upscaled":"downscaled";
+      commit(result.toDataURL("image/png"),tw,th,`Cropped & ${dir} to ${tw}×${th}`);
+      setResizing(false);
+    });
+  };
+
+  const undo = () => {
+    if (history.length<=1) return;
+    const nh=history.slice(0,-1), prev=nh[nh.length-1];
+    drawOp(prev,(img)=>{
+      imgElRef.current=img; imgSizeR.current={w:img.width,h:img.height};
+      setImgSrc(prev); setImgSize({w:img.width,h:img.height});
+      setResizeW(String(img.width)); setResizeH(String(img.height));
+      const nb={x:0,y:0,w:img.width,h:img.height}; setCropBox(nb); cropBoxR.current=nb;
+      scheduleDraw();
+    });
+    setHistory(nh); showToast("Undone");
+  };
+
+  const reloadOriginal = () => {
+    if (history.length<=1) return;
+    const orig=history[0];
+    drawOp(orig,(img)=>{
+      const w=img.width, h=img.height;
+      imgElRef.current=img; imgSizeR.current={w,h};
+      // reset zoom to fit
+      const wrap=wrapRef.current;
+      const fz=wrap ? Math.min((wrap.offsetWidth-40)/w,(wrap.offsetHeight-40)/h) : 1;
+      zoomR.current=fz; panR.current={x:0,y:0};
+      setZoom(fz); forceTick();
+      setImgSrc(orig); setImgSize({w,h});
+      setResizeW(String(w)); setResizeH(String(h));
+      setRotation(0);
+      const nb={x:0,y:0,w,h}; setCropBox(nb); cropBoxR.current=nb;
+      scheduleDraw();
+    });
+    setHistory([orig]); showToast("Reloaded original");
+  };
+
+  const redrawExportPanes = useCallback(() => {
+    [canvasARef, canvasBRef].forEach((cvRef, i) => {
+      const cv = cvRef.current;
+      const img = i===0 ? imgARef.current : imgBRef.current;
+      if (!cv || !img) return;
+      const rect = cv.getBoundingClientRect();
+      const w = Math.round(rect.width) || cv.offsetWidth || 400;
+      const h = Math.round(rect.height) || cv.offsetHeight || 300;
+      if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#1a1a1a"; ctx.fillRect(0,0,w,h);
+      const z = exportZoomRef.current;
+      const px = exportPanRef.current.x, py = exportPanRef.current.y;
+      const dw = img.naturalWidth*z, dh = img.naturalHeight*z;
+      ctx.drawImage(img, w/2+px-dw/2, h/2+py-dh/2, dw, dh);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!exportPreview) return;
+    const img = new Image();
+    img.onload = () => { imgARef.current = img; redrawExportPanes(); };
+    img.src = exportPreview;
+  }, [exportPreview, redrawExportPanes]);
+
+  useEffect(() => {
+    if (!exportPreviewB) return;
+    const img = new Image();
+    img.onload = () => { imgBRef.current = img; redrawExportPanes(); };
+    img.src = exportPreviewB;
+  }, [exportPreviewB, redrawExportPanes]);
+
+  useEffect(() => { redrawExportPanes(); }, [exportPan, exportZoom, redrawExportPanes]);
+
+  // Clamp pan so image always fully covers the 512×512 pane
+  const clampExportPan = (px, py, z) => {
+    const img = imgARef.current || imgBRef.current;
+    if (!img) return {x:px, y:py};
+    const paneW = 512, paneH = 512;
+    const dw = img.naturalWidth * z, dh = img.naturalHeight * z;
+    // max pan: image edge at pane edge (image larger than pane — can pan freely within bounds)
+    const maxX = Math.max(0, (dw - paneW) / 2);
+    const maxY = Math.max(0, (dh - paneH) / 2);
+    return { x: Math.max(-maxX, Math.min(maxX, px)), y: Math.max(-maxY, Math.min(maxY, py)) };
+  };
+
+  // Min zoom: image must cover the full 512×512 pane
+  const minExportZoom = () => {
+    const img = imgARef.current || imgBRef.current;
+    if (!img) return 0.1;
+    return Math.max(512 / img.naturalWidth, 512 / img.naturalHeight);
+  };
+
+  const onExportMouseDown = (e) => {
+    e.preventDefault();
+    exportDragRef.current = {sx:e.clientX, sy:e.clientY, px:exportPanRef.current.x, py:exportPanRef.current.y};
+  };
+  const onExportMouseMove = (e) => {
+    if (!exportDragRef.current) return;
+    const rawPx = exportDragRef.current.px + (e.clientX - exportDragRef.current.sx);
+    const rawPy = exportDragRef.current.py + (e.clientY - exportDragRef.current.sy);
+    const clamped = clampExportPan(rawPx, rawPy, exportZoomRef.current);
+    exportPanRef.current = clamped; setExportPan({...clamped});
+  };
+  const onExportMouseUp = () => { exportDragRef.current = null; };
+  const onExportWheel = useCallback((e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+    const minZ = minExportZoom();
+    const rawZ = exportZoomRef.current * factor;
+    const nz = Math.max(minZ, Math.min(10, rawZ));
+
+    // Zoom toward mouse: find mouse pos relative to pane center
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) - 256; // offset from pane center (512/2)
+    const my = (e.clientY - rect.top)  - 256;
+
+    // Adjust pan so the pixel under cursor stays fixed
+    const ratio = nz / exportZoomRef.current;
+    const rawPx = (exportPanRef.current.x - mx) * ratio + mx;
+    const rawPy = (exportPanRef.current.y - my) * ratio + my;
+    const clamped = clampExportPan(rawPx, rawPy, nz);
+
+    exportZoomRef.current = nz;
+    exportPanRef.current = clamped;
+    setExportZoom(nz);
+    setExportPan({...clamped});
+  }, []);
+
+  const generateExportPreview = useCallback((fmt, quality, slot) => {
+    const img = imgElRef.current;
+    if (!img || !img.naturalWidth) return;
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext("2d");
+    if (fmt === "jpg") { ctx.fillStyle = "#ffffff"; ctx.fillRect(0,0,c.width,c.height); }
+    ctx.drawImage(img, 0, 0);
+    const mimeMap = { png:"image/png", jpg:"image/jpeg", webp:"image/webp" };
+    const url = c.toDataURL(mimeMap[fmt] || "image/png", quality/100);
+    const bytes = Math.round((url.split(",")[1]||"").length * 0.75);
+    if (slot==="b") { setExportPreviewB(url); setExportSizeB(bytes); }
+    else             { setExportPreview(url);  setExportSize(bytes); }
+  }, []);
+
+  useEffect(() => {
+    if (!showExportMenu) return;
+    clearTimeout(exportDebounce.current);
+    exportDebounce.current = setTimeout(() => generateExportPreview(exportFormat, exportQuality, "a"), 120);
+    return () => clearTimeout(exportDebounce.current);
+  }, [exportFormat, exportQuality, showExportMenu, imgSrc, generateExportPreview]);
+
+  useEffect(() => {
+    if (!showExportMenu || !exportCompare) return;
+    clearTimeout(exportDebounceB.current);
+    exportDebounceB.current = setTimeout(() => generateExportPreview(exportFmtB, exportQualityB, "b"), 120);
+    return () => clearTimeout(exportDebounceB.current);
+  }, [exportFmtB, exportQualityB, showExportMenu, exportCompare, imgSrc, generateExportPreview]);
+
+  const exportImg = (fmt, quality) => {
+    const f = fmt || exportFormat;
+    const q = quality != null ? quality : exportQuality/100;
+    setShowExportMenu(false);
+    const baseName = (imgName || "image").replace(/\.[^.]+$/, "");
+    drawOp(imgSrc, (img) => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext("2d");
+      if (f === "jpg") {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, c.width, c.height);
+      }
+      ctx.drawImage(img, 0, 0);
+      const mimeMap = { png:"image/png", jpg:"image/jpeg", webp:"image/webp" };
+      const extMap  = { png:"png", jpg:"jpg", webp:"webp" };
+      const url = c.toDataURL(mimeMap[f] || "image/png", q);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}_edited.${extMap[f] || "png"}`;
+      a.click();
+    });
+  };
+  const handleW = (v)=>{ setResizeW(v); if(lockAR&&imgSize.w){const n=parseInt(v);if(!isNaN(n))setResizeH(String(Math.round(n*imgSize.h/imgSize.w)));} };
+  const handleH = (v)=>{ setResizeH(v); if(lockAR&&imgSize.h){const n=parseInt(v);if(!isNaN(n))setResizeW(String(Math.round(n*imgSize.w/imgSize.h)));} };
+  const applyFixed = ()=>{
+    const fw=parseInt(fixedW),fh=parseInt(fixedH); if(!fw||!fh) return;
+    const cw=clamp(fw,1,imgSize.w),ch=clamp(fh,1,imgSize.h);
+    const nb={x:clamp(cropBox.x,0,imgSize.w-cw),y:clamp(cropBox.y,0,imgSize.h-ch),w:cw,h:ch};
+    setCropBox(nb); cropBoxR.current=nb; showToast(`Window: ${fw}×${fh}px`);
+  };
+
+  // Compute a centred, aspect-ratio-correct crop box for a resolution preset.
+  // If the preset's native size is larger than the image, scale it down to fit.
+  const applyResolutionMask = (resIdx) => {
+    const res = RESOLUTIONS[resIdx];
+    if (!res) return;
+    const iw = imgSizeR.current.w, ih = imgSizeR.current.h;
+    if (!iw || !ih) return;
+
+    // Resolve effective pixel dimensions — custom preset uses user-entered values
+    let rw = res.w, rh = res.h;
+    if (res.w === -1) {
+      rw = parseInt(customResR.current.w);
+      rh = parseInt(customResR.current.h);
+      if (!rw || !rh || rw < 1 || rh < 1) return; // no valid custom size yet
+    }
+    if (!rw || !rh) return;
+
+    const ar = rw / rh;
+    // Treat as ratio-only when both sides are ≤100 (ratio presets like 1:1, 4:3…)
+    const isRatioOnly = rw <= 100 && rh <= 100;
+
+    let bw, bh;
+    if (isRatioOnly || rw > iw || rh > ih) {
+      if (iw / ih >= ar) { bh = ih; bw = bh * ar; }
+      else               { bw = iw; bh = bw / ar; }
+    } else {
+      bw = rw; bh = rh;
+    }
+
+    bw = Math.round(bw); bh = Math.round(bh);
+    const nb = { x: Math.round((iw - bw) / 2), y: Math.round((ih - bh) / 2), w: bw, h: bh };
+    setCropBox(nb); cropBoxR.current = nb; forceTick();
+  };
+
+  // ── SVG overlay geometry (CSS px relative to wrapRef) ────────────────────────
+  // Use refs (not state) so geometry is always current even on the very first render.
+  // Use wrapRef dimensions (not cvRef) since the SVG is a child of wrapRef.
+
+  const _z  = zoomR.current;
+  const _p  = panR.current;
+  const _s  = imgSizeR.current;
+  const _wr = wrapRef.current;
+  const _cw = _wr ? _wr.offsetWidth  : 0;
+  const _ch = _wr ? _wr.offsetHeight : 0;
+  const il0 = _cw/2 + _p.x - _s.w*_z/2;
+  const it0 = _ch/2 + _p.y - _s.h*_z/2;
+  const toW = (ix,iy) => ({x:il0+ix*_z, y:it0+iy*_z});
+  const cb  = cropBoxR.current;
+  const sb  = (()=>{ const tl=toW(cb.x,cb.y),br=toW(cb.x+cb.w,cb.y+cb.h); return {x:tl.x,y:tl.y,w:br.x-tl.x,h:br.y-tl.y}; })();
+  const hss = [["nw",cb.x,cb.y],["n",cb.x+cb.w/2,cb.y],["ne",cb.x+cb.w,cb.y],
+               ["e",cb.x+cb.w,cb.y+cb.h/2],["se",cb.x+cb.w,cb.y+cb.h],
+               ["s",cb.x+cb.w/2,cb.y+cb.h],["sw",cb.x,cb.y+cb.h],["w",cb.x,cb.y+cb.h/2]]
+              .map(([n,ix,iy])=>{ const s=toW(ix,iy); return [n,s.x,s.y]; });
+
+  const LABEL={crop:"Crop",resize:"Resize",rotate:"Rotate",mirror:"Mirror",adjust:"Adjust"};
+  const fmtBytes = (b) => b==null ? "—" : b>1048576 ? `${(b/1048576).toFixed(2)} MB` : b>1024 ? `${(b/1024).toFixed(1)} KB` : `${b} B`;
+  const zoomPct=Math.round(zoom*100);
+
+  // cursor for the canvas area
+  const canvasCursor = cursor==="grabbing" ? "grabbing"
+    : (splitCompare && (tool==="adjust"||tool==="resize")) ? "col-resize"
+    : tool==="rotate" ? (rotationDragging ? "grabbing" : "crosshair")
+    : tool==="crop" ? "crosshair"
+    : "default";
+
+  // Rotate overlay: image center + handle point + arc in screen space
+  const _wr2 = wrapRef.current;
+  const rotCx = _wr2 ? _wr2.offsetWidth/2  + _p.x : 0;
+  const rotCy = _wr2 ? _wr2.offsetHeight/2 + _p.y : 0;
+  // handle sits on a circle of radius = half the larger dimension * zoom, min 60px
+  const rotHandleR = Math.max(60, Math.min(
+    (_wr2 ? Math.min(_wr2.offsetWidth, _wr2.offsetHeight)*0.38 : 120),
+    Math.max(_s.w, _s.h) * _z * 0.6
+  ));
+  const rotRad = rotationR.current * Math.PI / 180;
+  const rotHx = rotCx + Math.cos(rotRad - Math.PI/2) * rotHandleR;
+  const rotHy = rotCy + Math.sin(rotRad - Math.PI/2) * rotHandleR;
+  // arc path for current angle
+  const rotArcR = rotHandleR * 0.55;
+  const arcStartX = rotCx + Math.cos(-Math.PI/2) * rotArcR;
+  const arcStartY = rotCy + Math.sin(-Math.PI/2) * rotArcR;
+  const arcEndX   = rotCx + Math.cos(rotRad - Math.PI/2) * rotArcR;
+  const arcEndY   = rotCy + Math.sin(rotRad - Math.PI/2) * rotArcR;
+  const arcLarge  = Math.abs(rotationR.current) > 180 ? 1 : 0;
+  const arcSweep  = rotationR.current >= 0 ? 1 : 0;
+
+  return (
+    <div style={{ fontFamily:"'DM Sans','Helvetica Neue',sans-serif", height:"100vh", background:D.bg, display:"flex", flexDirection:"column", color:D.text, overflow:"hidden" }}>
+      <style>{`*{box-sizing:border-box}input[type=range]{accent-color:${D.accent}}input[type=checkbox]{accent-color:${D.accent}}::-webkit-scrollbar{width:5px;background:${D.bg}}::-webkit-scrollbar-thumb{background:${D.border2};border-radius:3px}`}</style>
+
+      {/* header */}
+      <div style={{ background:D.surface, borderBottom:`1px solid ${D.border}`, padding:"0 18px", display:"flex", alignItems:"center", justifyContent:"space-between", height:46, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+          <svg width="17" height="17" viewBox="0 0 18 18" fill="none">
+            <rect x="1" y="1" width="16" height="16" rx="3.5" fill={D.accent} opacity="0.2"/>
+            <circle cx="5.5" cy="5.5" r="1.5" fill={D.accent}/>
+            <path d="M1 12l4.5-4.5 3 3 2.5-2.5 6 6" stroke={D.accent} strokeWidth="1.4" fill="none"/>
+          </svg>
+          <span style={{ fontWeight:500, fontSize:14, letterSpacing:"-0.01em" }}>Pixlite</span>
+          {imgName && <span style={{ fontSize:11, color:D.textDim, fontFamily:"'DM Mono',monospace", marginLeft:2 }}>{imgName}</span>}
+          {imgSrc && <span style={{ fontSize:11, color:D.textDim, fontFamily:"'DM Mono',monospace", opacity:0.6 }}>{imgSize.w}×{imgSize.h}</span>}
+        </div>
+        {imgSrc && (
+          <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+            {/* zoom controls */}
+            <button onClick={zoomOut} style={{ width:26,height:26,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:`1px solid ${D.border2}`,borderRadius:5,color:D.textMuted,cursor:"pointer",fontSize:16,lineHeight:1,fontFamily:"inherit" }}>−</button>
+            <span style={{ fontFamily:"'DM Mono',monospace",fontSize:12,color:D.text,minWidth:46,display:"inline-block",textAlign:"center",padding:"3px 6px",background:D.surface2,border:`1px solid ${D.border2}`,borderRadius:5,userSelect:"none" }}>{zoomPct}%</span>
+            <button onClick={zoomIn}  style={{ width:26,height:26,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:`1px solid ${D.border2}`,borderRadius:5,color:D.textMuted,cursor:"pointer",fontSize:16,lineHeight:1,fontFamily:"inherit" }}>+</button>
+            <button onClick={zoom100} style={{ padding:"3px 8px",fontSize:12,background:"transparent",border:`1px solid ${D.border2}`,borderRadius:5,color:D.textMuted,cursor:"pointer",fontFamily:"inherit" }}>100%</button>
+            <button onClick={zoomFit} style={{ padding:"3px 8px",fontSize:12,background:"transparent",border:`1px solid ${D.border2}`,borderRadius:5,color:D.textMuted,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:4 }}>
+              <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9"/></svg>Fit
+            </button>
+            <div style={{ width:1,height:18,background:D.border2,margin:"0 4px" }}/>
+            {/* action buttons */}
+            <button onClick={undo} disabled={history.length<=1} style={{ padding:"5px 12px", fontSize:12, background:D.surface2, border:`1px solid ${D.border2}`, borderRadius:6, color:D.textMuted, cursor:history.length<=1?"default":"pointer", opacity:history.length<=1?0.3:1, fontFamily:"inherit" }}>Undo</button>
+            <button onClick={reloadOriginal} disabled={history.length<=1} title="Discard all edits and reload the original image" style={{ padding:"5px 12px", fontSize:12, background:D.surface2, border:`1px solid ${D.border2}`, borderRadius:6, color:D.textMuted, cursor:history.length<=1?"default":"pointer", opacity:history.length<=1?0.3:1, fontFamily:"inherit" }}>Reload</button>
+            <button onClick={exportImg} style={{ padding:"5px 12px", fontSize:12, background:D.accent, border:"none", borderRadius:"6px 0 0 6px", color:"#fff", cursor:"pointer", fontWeight:500, fontFamily:"inherit" }}>
+              Export {exportFormat.toUpperCase()}
+            </button>
+            <div style={{ position:"relative" }}>
+              <button onClick={()=>{ const opening=!showExportMenu; if(opening){ const img=imgElRef.current; if(img){ const minZ=Math.max(512/img.naturalWidth,512/img.naturalHeight); exportZoomRef.current=minZ; exportPanRef.current={x:0,y:0}; setExportZoom(minZ); setExportPan({x:0,y:0}); } } setShowExportMenu(m=>!m); }} style={{ padding:"5px 7px", fontSize:11, background:D.accent, border:`1px solid rgba(255,255,255,0.25)`, borderLeft:"none", borderRadius:"0 6px 6px 0", color:"#fff", cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center" }}>
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 3.5l3 3 3-3"/></svg>
+              </button>
+              {showExportMenu && (
+                <div style={{ position:"fixed", top:"50%", left:"50%", transform:"translate(-50%,-50%)", background:D.surface, border:`1px solid ${D.border2}`, borderRadius:12, padding:20, zIndex:300, width:exportCompare?1096:572, maxWidth:"98vw", boxShadow:"0 16px 64px rgba(0,0,0,0.5)" }} onClick={e=>e.stopPropagation()}>
+                  {/* Header */}
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                    <span style={{ fontSize:13, fontWeight:600, color:D.text }}>Export Preview</span>
+                    <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                      <span style={{ fontSize:11, color:D.textDim }}>{imgSize.w}×{imgSize.h}px</span>
+                      <button onClick={()=>setExportCompare(c=>!c)} style={{ padding:"4px 10px", fontSize:11, fontWeight:500, background:exportCompare?`${D.accent}22`:"transparent", border:`1px solid ${exportCompare?D.accent:D.border2}`, borderRadius:6, color:exportCompare?D.accent:D.textMuted, cursor:"pointer", fontFamily:"inherit" }}>
+                        {exportCompare?"Single view":"Compare"}
+                      </button>
+                      <button onClick={()=>setShowExportMenu(false)} style={{ width:24, height:24, display:"flex", alignItems:"center", justifyContent:"center", background:"transparent", border:`1px solid ${D.border2}`, borderRadius:5, color:D.textMuted, cursor:"pointer", fontSize:14 }}>✕</button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize:10, color:D.textDim, marginBottom:10 }}>Drag to pan · scroll to zoom{exportCompare?" · both panes move in sync":""}</div>
+
+                  {/* Format selectors row — above canvases */}
+                  <div style={{ display:"flex", gap:12, marginBottom:8 }}>
+                    <div style={{ width:512, display:"flex", justifyContent:"center", gap:4 }}>
+                      {[["png","PNG"],["jpg","JPEG"],["webp","WebP"]].map(([f,l])=>(
+                        <button key={f} onClick={()=>setExportFormat(f)} style={{ padding:"4px 10px", fontSize:11, fontWeight:500, background:exportFormat===f?`${D.accent}22`:"transparent", border:`1px solid ${exportFormat===f?`${D.accent}55`:D.border}`, borderRadius:6, color:exportFormat===f?D.accent:D.textMuted, cursor:"pointer", fontFamily:"inherit" }}>{l}</button>
+                      ))}
+                    </div>
+                    {exportCompare && (
+                      <div style={{ width:512, display:"flex", justifyContent:"center", gap:4 }}>
+                        {[["png","PNG"],["jpg","JPEG"],["webp","WebP"]].map(([f,l])=>(
+                          <button key={f} onClick={()=>setExportFmtB(f)} style={{ padding:"4px 10px", fontSize:11, fontWeight:500, background:exportFmtB===f?`${D.accent}22`:"transparent", border:`1px solid ${exportFmtB===f?`${D.accent}55`:D.border}`, borderRadius:6, color:exportFmtB===f?D.accent:D.textMuted, cursor:"pointer", fontFamily:"inherit" }}>{l}</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Fixed-size canvas row */}
+                  <div style={{ display:"flex", gap:12, marginBottom:8 }}>
+                    {/* Canvas A — always 512×512 */}
+                    <div style={{ width:512, height:512, position:"relative", borderRadius:7, overflow:"hidden", background:"#1a1a1a", border:`1px solid ${D.border}`, cursor:"grab", flexShrink:0 }}
+                      onMouseDown={onExportMouseDown} onMouseMove={onExportMouseMove} onMouseUp={onExportMouseUp} onMouseLeave={onExportMouseUp}
+                      ref={el=>{ if(el&&!el._wired){ el._wired=true; el.addEventListener("wheel",onExportWheel,{passive:false}); } }}>
+                      <canvas ref={canvasARef} style={{ display:"block", width:"100%", height:"100%" }}/>
+                      {!exportPreview && <div style={{ position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center" }}><span style={{ fontSize:11,color:D.textDim }}>Loading…</span></div>}
+                    </div>
+                    {/* Canvas B — always 512×512 */}
+                    {exportCompare && (
+                      <div style={{ width:512, height:512, position:"relative", borderRadius:7, overflow:"hidden", background:"#1a1a1a", border:`1px solid ${D.border}`, cursor:"grab", flexShrink:0 }}
+                        onMouseDown={onExportMouseDown} onMouseMove={onExportMouseMove} onMouseUp={onExportMouseUp} onMouseLeave={onExportMouseUp}
+                        ref={el=>{ if(el&&!el._wired){ el._wired=true; el.addEventListener("wheel",onExportWheel,{passive:false}); } }}>
+                        <canvas ref={canvasBRef} style={{ display:"block", width:"100%", height:"100%" }}/>
+                        {!exportPreviewB && <div style={{ position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center" }}><span style={{ fontSize:11,color:D.textDim }}>Loading…</span></div>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Info + quality controls row — below canvases, never affects canvas height */}
+                  <div style={{ display:"flex", gap:12, marginBottom:16 }}>
+                    {/* Controls A */}
+                    <div style={{ width:512, flexShrink:0 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                        <span style={{ fontSize:10, color:D.textDim, fontFamily:"'DM Mono',monospace" }}>{exportFormat.toUpperCase()} · {Math.round(exportZoom*100)}%</span>
+                        <span style={{ fontSize:11, fontWeight:600, color:D.text, fontFamily:"'DM Mono',monospace" }}>~{fmtBytes(exportSize)}</span>
+                      </div>
+                      {(exportFormat==="jpg"||exportFormat==="webp") ? (
+                        <div>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}>
+                            <span style={{ fontSize:10, color:D.textMuted }}>Quality</span>
+                            <span style={{ fontSize:10, color:D.text, fontFamily:"'DM Mono',monospace" }}>{exportQuality}%</span>
+                          </div>
+                          <input type="range" min="10" max="100" step="1" value={exportQuality} onChange={e=>setExportQuality(Number(e.target.value))} style={{ width:"100%", accentColor:D.accent }}/>
+                        </div>
+                      ) : <div style={{ fontSize:10, color:D.textDim }}>Lossless — no quality setting</div>}
+                    </div>
+                    {/* Controls B */}
+                    {exportCompare && (
+                      <div style={{ width:512, flexShrink:0 }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                          <span style={{ fontSize:10, color:D.textDim, fontFamily:"'DM Mono',monospace" }}>{exportFmtB.toUpperCase()} · {Math.round(exportZoom*100)}%</span>
+                          <span style={{ fontSize:11, fontWeight:600, color:D.text, fontFamily:"'DM Mono',monospace" }}>~{fmtBytes(exportSizeB)}</span>
+                        </div>
+                        {(exportFmtB==="jpg"||exportFmtB==="webp") ? (
+                          <div>
+                            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}>
+                              <span style={{ fontSize:10, color:D.textMuted }}>Quality</span>
+                              <span style={{ fontSize:10, color:D.text, fontFamily:"'DM Mono',monospace" }}>{exportQualityB}%</span>
+                            </div>
+                            <input type="range" min="10" max="100" step="1" value={exportQualityB} onChange={e=>setExportQualityB(Number(e.target.value))} style={{ width:"100%", accentColor:D.accent }}/>
+                          </div>
+                        ) : <div style={{ fontSize:10, color:D.textDim }}>Lossless — no quality setting</div>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer */}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={()=>exportImg(exportFormat, exportQuality/100)}
+                      style={{ flex:1, padding:"9px", fontSize:12, fontWeight:600, background:D.accent, border:"none", borderRadius:7, color:"#fff", cursor:"pointer", fontFamily:"inherit" }}>
+                      Save {exportFormat.toUpperCase()} — ~{fmtBytes(exportSize)}
+                    </button>
+                    {exportCompare && (
+                      <button onClick={()=>exportImg(exportFmtB, exportQualityB/100)}
+                        style={{ flex:1, padding:"9px", fontSize:12, fontWeight:600, background:D.surface2, border:`1px solid ${D.accent}`, borderRadius:7, color:D.accent, cursor:"pointer", fontFamily:"inherit" }}>
+                        Save {exportFmtB.toUpperCase()} — ~{fmtBytes(exportSizeB)}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ width:1, height:18, background:D.border2, margin:"0 2px" }}/>
+            <button onClick={()=>setLightMode(m=>!m)} title={lightMode?"Switch to dark mode":"Switch to light mode"} style={{ width:30, height:30, display:"flex", alignItems:"center", justifyContent:"center", background:"transparent", border:`1px solid ${D.border2}`, borderRadius:6, cursor:"pointer", color:D.textMuted, flexShrink:0 }}>
+              {lightMode
+                ? <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M11.1 4.9l-1.4 1.4M4.9 11.1l-1.4 1.4"/></svg>
+                : <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13.5 10.5A6 6 0 015.5 2.5a6 6 0 108 8z"/></svg>
+              }
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display:"flex", flex:1, overflow:"hidden", minHeight:0 }}>
+        {/* sidebar — always mounted so wrapRef has correct width on first image load */}
+        <div style={{ width:imgSrc?220:0, minWidth:0, background:D.surface, borderRight:imgSrc?`1px solid ${D.border}`:"none", display:"flex", flexDirection:"column", flexShrink:0, overflowY:"auto", overflowX:"hidden", transition:"width 0s" }}>
+          {imgSrc && <>
+            {/* horizontal icon strip */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-around", padding:"8px 6px", borderBottom:`1px solid ${D.border}` }}>
+              {TOOLS.map(t=>(
+                <div key={t} style={{ position:"relative" }}
+                  onMouseEnter={e=>{ const tt=e.currentTarget.querySelector(".tip"); if(tt) tt.style.opacity="1"; }}
+                  onMouseLeave={e=>{ const tt=e.currentTarget.querySelector(".tip"); if(tt) tt.style.opacity="0"; }}
+                >
+                  <button onClick={()=>{ setTool(t); if(t!=="adjust"&&t!=="resize"){ setSplitCompare(false); splitCompareR.current=false; } }} style={{ width:32, height:32, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:7, border:"none", cursor:"pointer", background:tool===t?`${D.accent}22`:"transparent", color:tool===t?D.accent:D.textMuted, fontFamily:"inherit", flexShrink:0 }}>
+                    <ToolIcon tool={t} active={tool===t} accent={D.accent} muted={D.textMuted}/>
+                  </button>
+                  {/* tooltip */}
+                  <div className="tip" style={{ position:"absolute", top:"calc(100% + 6px)", left:"50%", transform:"translateX(-50%)", background:D.text, color:D.bg, fontSize:11, fontWeight:500, padding:"3px 8px", borderRadius:5, whiteSpace:"nowrap", pointerEvents:"none", opacity:0, transition:"opacity 0.12s", zIndex:100 }}>
+                    {LABEL[t]}
+                    <div style={{ position:"absolute", top:-4, left:"50%", transform:"translateX(-50%)", width:0, height:0, borderLeft:"4px solid transparent", borderRight:"4px solid transparent", borderBottom:`4px solid ${D.text}` }}/>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ padding:"14px 13px 0", flex:1 }}>
+
+              {tool==="rotate" && (
+                <div>
+                  <div style={{ fontSize:12,color:D.textMuted,lineHeight:1.6,marginBottom:12,padding:"8px 10px",background:`${D.accent}0d`,border:`1px solid ${D.accent}22`,borderRadius:6 }}>
+                    Click and drag on the canvas to rotate. The image rotates around its center.
+                  </div>
+                  <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,padding:"8px 10px",background:D.surface2,borderRadius:6,border:`1px solid ${D.border2}` }}>
+                    <span style={{ fontSize:11,color:D.textMuted }}>Angle</span>
+                    <span style={{ fontFamily:"'DM Mono',monospace",fontSize:18,fontWeight:500,color:rotation!==0?D.accent:D.text }}>{rotation}°</span>
+                  </div>
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6 }}>Presets</div>
+                  <div style={{ display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:5,marginBottom:6 }}>
+                    {[-90,90,180].map(v=><button key={v} onClick={()=>setRotation(v)} style={{ padding:"6px 0",fontSize:12,background:rotation===v?`${D.accent}22`:D.surface2,border:`1px solid ${rotation===v?`${D.accent}55`:D.border2}`,borderRadius:6,color:rotation===v?D.accent:D.textMuted,cursor:"pointer",fontFamily:"inherit" }}>{v>0?"+":""}{v}°</button>)}
+                  </div>
+                  <div style={{ display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:5,marginBottom:14 }}>
+                    {[-45,45].map(v=><button key={v} onClick={()=>setRotation(v)} style={{ padding:"6px 0",fontSize:12,background:rotation===v?`${D.accent}22`:D.surface2,border:`1px solid ${rotation===v?`${D.accent}55`:D.border2}`,borderRadius:6,color:rotation===v?D.accent:D.textMuted,cursor:"pointer",fontFamily:"inherit" }}>{v>0?"+":""}{v}°</button>)}
+                  </div>
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6 }}>Nudge</div>
+                  <div style={{ display:"flex",gap:5,marginBottom:14 }}>
+                    {[[-1,"−1°"],[+1,"+1°"],[-5,"−5°"],[+5,"+5°"]].map(([d,lbl])=>(
+                      <button key={lbl} onClick={()=>setRotation(r=>Math.max(-180,Math.min(180,r+d)))} style={{ flex:1,padding:"6px 0",fontSize:11,background:D.surface2,border:`1px solid ${D.border2}`,borderRadius:6,color:D.textMuted,cursor:"pointer",fontFamily:"inherit" }}>{lbl}</button>
+                    ))}
+                  </div>
+                  <button onClick={applyRotation} disabled={rotation===0} style={{ width:"100%",padding:"8px",fontSize:13,fontWeight:500,background:rotation===0?D.surface2:D.accent,border:"none",borderRadius:7,color:rotation===0?D.textDim:"#fff",cursor:rotation===0?"default":"pointer",fontFamily:"inherit",marginBottom:6 }}>Apply rotation</button>
+                  <button onClick={()=>setRotation(0)} disabled={rotation===0} style={{ width:"100%",padding:"7px",fontSize:12,background:"transparent",border:`1px solid ${D.border2}`,borderRadius:6,color:rotation===0?D.textDim:D.textMuted,cursor:rotation===0?"default":"pointer",fontFamily:"inherit" }}>Reset</button>
+                </div>
+              )}
+
+              {tool==="mirror" && (
+                <div>
+                  <div style={{ fontSize:12,color:D.textMuted,lineHeight:1.6,marginBottom:16 }}>Flip the image along an axis. The operation is applied immediately.</div>
+                  <div style={{ display:"flex",flexDirection:"column",gap:8 }}>
+                    <button onClick={()=>applyMirror("h")} style={{ display:"flex",alignItems:"center",gap:10,padding:"12px 14px",fontSize:13,fontWeight:500,background:D.surface2,border:`1px solid ${D.border2}`,borderRadius:8,color:D.text,cursor:"pointer",fontFamily:"inherit",textAlign:"left" }}>
+                      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke={D.accent} strokeWidth="1.5">
+                        <path d="M11 2v18"/>
+                        <path d="M7 6L2 11l5 5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M15 6l5 5-5 5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M2 11h4M16 11h4" opacity="0.4"/>
+                      </svg>
+                      <div>
+                        <div style={{ fontSize:13,fontWeight:500,color:D.text,marginBottom:2 }}>Flip horizontal</div>
+                        <div style={{ fontSize:11,color:D.textMuted }}>Mirror left ↔ right</div>
+                      </div>
+                    </button>
+                    <button onClick={()=>applyMirror("v")} style={{ display:"flex",alignItems:"center",gap:10,padding:"12px 14px",fontSize:13,fontWeight:500,background:D.surface2,border:`1px solid ${D.border2}`,borderRadius:8,color:D.text,cursor:"pointer",fontFamily:"inherit",textAlign:"left" }}>
+                      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke={D.accent} strokeWidth="1.5">
+                        <path d="M2 11h18"/>
+                        <path d="M6 7L11 2l5 5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M6 15l5 5 5-5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M11 2v4M11 16v4" opacity="0.4"/>
+                      </svg>
+                      <div>
+                        <div style={{ fontSize:13,fontWeight:500,color:D.text,marginBottom:2 }}>Flip vertical</div>
+                        <div style={{ fontSize:11,color:D.textMuted }}>Mirror top ↕ bottom</div>
+                      </div>
+                    </button>
+                  </div>
+                  <div style={{ height:1,background:D.border,margin:"16px 0 12px" }}/>
+                  <div style={{ fontSize:11,color:D.textDim,lineHeight:1.6 }}>Use Undo in the toolbar to revert a flip.</div>
+                </div>
+              )}
+
+
+              {tool==="adjust" && (()=>{
+                const hasAdj = Object.values(adj).some(v=>v!==0);
+                const sliders = [
+                  { key:"brightness",  label:"Brightness",   min:-1,  max:1,  step:0.01 },
+                  { key:"contrast",    label:"Contrast",     min:-1,  max:1,  step:0.01 },
+                  { key:"saturation",  label:"Saturation",   min:-1,  max:1,  step:0.01 },
+                  { key:"exposure",    label:"Exposure",     min:-3,  max:3,  step:0.05 },
+                  { key:"highlights",  label:"Highlights",   min:-1,  max:1,  step:0.01 },
+                  { key:"shadows",     label:"Shadows",      min:-1,  max:1,  step:0.01 },
+                  { key:"temperature", label:"Temperature",  min:-100,max:100, step:1  },
+                  { key:"tint",        label:"Tint",         min:-100,max:100, step:1  },
+                  { key:"vignette",    label:"Vignette",     min:0,   max:1,  step:0.01 },
+                ];
+                return (
+                  <div>
+                    {sliders.map(({key,label,min,max,step})=>{
+                      const v = adj[key];
+                      const pct = ((v-min)/(max-min))*100;
+                      return (
+                        <div key={key} style={{ marginBottom:10 }}>
+                          <div style={{ display:"flex",justifyContent:"space-between",marginBottom:3 }}>
+                            <span style={{ fontSize:11,color:v!==0?D.accent:D.textMuted }}>{label}</span>
+                            <span style={{ fontSize:11,color:v!==0?D.accent:D.textDim,fontFamily:"'DM Mono',monospace" }}>{v>0?"+":""}{Math.round(v*100)/100}</span>
+                          </div>
+                          <input type="range" min={min} max={max} step={step} value={v}
+                            onChange={e=>{ const nv=parseFloat(e.target.value); setAdj(a=>({...a,[key]:nv})); }}
+                            style={{ width:"100%",accentColor:v!==0?D.accent:undefined }}
+                          />
+                        </div>
+                      );
+                    })}
+
+                    <div style={{ height:1,background:D.border,margin:"6px 0 10px" }}/>
+                    <button onClick={applyAdjustments} disabled={!hasAdj} style={{ width:"100%",padding:"8px",fontSize:13,fontWeight:500,background:hasAdj?D.accent:D.surface2,border:"none",borderRadius:7,color:hasAdj?"#fff":D.textDim,cursor:hasAdj?"pointer":"default",fontFamily:"inherit",marginBottom:7 }}>
+                      Apply adjustments
+                    </button>
+                    <button onClick={()=>{ setAdj(defaultAdj); adjR.current=defaultAdj; scheduleDraw(); }} disabled={!hasAdj} style={{ width:"100%",padding:"7px",fontSize:12,background:"transparent",border:`1px solid ${D.border2}`,borderRadius:6,color:hasAdj?D.textMuted:D.textDim,cursor:hasAdj?"pointer":"default",fontFamily:"inherit",marginBottom:12 }}>
+                      Reset all
+                    </button>
+                    <div style={{ height:1,background:D.border,margin:"0 0 12px" }}/>
+                    <label style={{ display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer" }}>
+                      <span style={{ fontSize:12,color:D.textMuted }}>Compare before/after</span>
+                      <span onClick={()=>setSplitCompare(v=>!v)} style={{ width:36,height:20,borderRadius:10,background:splitCompare?D.accent:D.surface2,border:`1px solid ${D.border2}`,display:"flex",alignItems:"center",padding:"2px",cursor:"pointer",transition:"background 0.15s" }}>
+                        <span style={{ width:14,height:14,borderRadius:7,background:"#fff",transform:splitCompare?"translateX(16px)":"translateX(0)",transition:"transform 0.15s",display:"block",boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }}/>
+                      </span>
+                    </label>
+                  </div>
+                );
+              })()}
+
+              {tool==="resize" && (
+                <div>
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8 }}>Quick scale</div>
+                  <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5,marginBottom:14 }}>
+                    {[0.25,0.5,2,4].map(mult=>{
+                      const tw=Math.round(imgSize.w*mult), th=Math.round(imgSize.h*mult);
+                      const label = mult<1 ? `${mult*100}%` : `${mult}×`;
+                      const isUp = mult>=1;
+                      return (
+                        <button key={mult} onClick={()=>{
+                          setResizing(true);
+                          drawOp(imgSrc,(img)=>{
+                            const src=document.createElement("canvas"); src.width=img.naturalWidth; src.height=img.naturalHeight; src.getContext("2d").drawImage(img,0,0);
+                            const result=steppedScale(src,tw,th);
+                            commit(result.toDataURL("image/png"),tw,th,`Scaled to ${tw}×${th}`);
+                            setResizing(false);
+                          });
+                        }} disabled={resizing} style={{ padding:"7px 0",fontSize:12,fontWeight:500,background:D.surface2,border:`1px solid ${D.border2}`,borderRadius:6,color:resizing?D.textDim:isUp?D.accent:D.textMuted,cursor:resizing?"default":"pointer",fontFamily:"inherit",display:"flex",flexDirection:"column",alignItems:"center",gap:1 }}>
+                          <span>{label}</span>
+                          <span style={{ fontSize:9,color:D.textDim,fontFamily:"'DM Mono',monospace" }}>{tw>9999?"…":tw}×{th>9999?"…":th}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ height:1,background:D.border,margin:"0 0 14px" }}/>
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8 }}>Custom size</div>
+                  <div style={{ display:"flex",gap:6,marginBottom:8 }}>
+                    <div style={{ flex:1 }}><div style={{ fontSize:11,color:D.textMuted,marginBottom:4 }}>W</div><input type="number" value={resizeW} onChange={e=>handleW(e.target.value)} style={ni}/></div>
+                    <div style={{ flex:1 }}><div style={{ fontSize:11,color:D.textMuted,marginBottom:4 }}>H</div><input type="number" value={resizeH} onChange={e=>handleH(e.target.value)} style={ni}/></div>
+                  </div>
+                  <label style={{ display:"flex",alignItems:"center",gap:7,fontSize:12,color:D.textMuted,marginBottom:12,cursor:"pointer" }}>
+                    <input type="checkbox" checked={lockAR} onChange={e=>setLockAR(e.target.checked)}/>Lock aspect ratio
+                  </label>
+                  <button onClick={applyResize} disabled={resizing||!resizeW||!resizeH} style={{ width:"100%",padding:"8px",fontSize:13,fontWeight:500,background:resizing||!resizeW?D.surface2:D.accent,border:"none",borderRadius:7,color:resizing||!resizeW?D.textDim:"#fff",cursor:resizing||!resizeW?"default":"pointer",fontFamily:"inherit",marginBottom:14 }}>
+                    {resizing?"Scaling…":"Apply resize"}
+                  </button>
+
+                  <div style={{ height:1,background:D.border,margin:"0 0 12px" }}/>
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4 }}>Current size</div>
+                  <div style={{ fontFamily:"'DM Mono',monospace",fontSize:12,color:D.textMuted,marginBottom:10 }}>{imgSize.w}×{imgSize.h}px</div>
+                  <div style={{ fontSize:11,color:D.textDim,lineHeight:1.6,padding:"8px 10px",background:"rgba(255,255,255,0.03)",borderRadius:6,border:`1px solid ${D.border}`,marginBottom:12 }}>
+                    Uses multi-pass stepped scaling — up or down — for sharper results than a single-pass stretch.
+                  </div>
+                  <label style={{ display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer" }}>
+                    <span style={{ fontSize:12,color:D.textMuted }}>Compare before/after</span>
+                    <span onClick={()=>setSplitCompare(v=>!v)} style={{ width:36,height:20,borderRadius:10,background:splitCompare?D.accent:D.surface2,border:`1px solid ${D.border2}`,display:"flex",alignItems:"center",padding:"2px",cursor:"pointer",transition:"background 0.15s" }}>
+                      <span style={{ width:14,height:14,borderRadius:7,background:"#fff",transform:splitCompare?"translateX(16px)":"translateX(0)",transition:"transform 0.15s",display:"block",boxShadow:"0 1px 3px rgba(0,0,0,0.3)" }}/>
+                    </span>
+                  </label>
+                </div>
+              )}
+
+              {tool==="crop" && (
+                <div>
+                  {/* Selection inputs — top of panel */}
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6 }}>Selection</div>
+                  <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:6 }}>
+                    {/* X and Y — read only display */}
+                    {[["X",Math.round(cb.x)],["Y",Math.round(cb.y)]].map(([k,v])=>(
+                      <div key={k} style={{ background:D.surface2,borderRadius:6,padding:"5px 8px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:6 }}>
+                        <span style={{ fontSize:10,color:D.textDim,fontWeight:500,letterSpacing:"0.04em" }}>{k}</span>
+                        <span style={{ fontFamily:"'DM Mono',monospace",fontSize:12,color:D.textMuted }}>{v}</span>
+                      </div>
+                    ))}
+                    {/* W and H — editable */}
+                    {[["W","w"],["H","h"]].map(([label,axis])=>{
+                      const val = axis==="w" ? Math.round(cb.w) : Math.round(cb.h);
+                      const res = RESOLUTIONS[selRes];
+                      const isCustom = res && res.w === -1;
+                      const customAR = isCustom && parseInt(customResW) > 0 && parseInt(customResH) > 0
+                        ? parseInt(customResW) / parseInt(customResH) : null;
+                      const isLocked = selRes>0 && ((!isCustom && res.w>0) || (isCustom && customAR));
+                      return (
+                        <div key={label} style={{ background:D.surface2,borderRadius:6,padding:"4px 8px",display:"flex",alignItems:"center",gap:6 }}>
+                          <span style={{ fontSize:10,color:D.textDim,fontWeight:500,letterSpacing:"0.04em",flexShrink:0 }}>{label}</span>
+                          <input
+                            type="number"
+                            value={val||""}
+                            onChange={e=>{
+                              const n=parseInt(e.target.value); if(isNaN(n)||n<1) return;
+                              const iw=imgSizeR.current.w, ih=imgSizeR.current.h;
+                              if (isLocked) {
+                                const ar = isCustom ? customAR : RESOLUTIONS[selRes].w/RESOLUTIONS[selRes].h;
+                                let nw=axis==="w"?Math.min(n,iw):Math.min(Math.round(n*ar),iw);
+                                let nh=axis==="h"?Math.min(n,ih):Math.min(Math.round(n/ar),ih);
+                                if(nw>iw){nw=iw;nh=Math.round(iw/ar);}
+                                if(nh>ih){nh=ih;nw=Math.round(ih*ar);}
+                                const nb={x:Math.round((iw-nw)/2),y:Math.round((ih-nh)/2),w:Math.round(nw),h:Math.round(nh)};
+                                setCropBox(nb); cropBoxR.current=nb; forceTick();
+                              } else {
+                                const nb={...cropBoxR.current,[axis==="w"?"w":"h"]:Math.min(n,axis==="w"?iw:ih)};
+                                nb.x=clamp(nb.x,0,iw-nb.w); nb.y=clamp(nb.y,0,ih-nb.h);
+                                setCropBox(nb); cropBoxR.current=nb; forceTick();
+                              }
+                            }}
+                            style={{ ...ni, padding:"0", fontSize:12, width:"100%", fontFamily:"'DM Mono',monospace", background:"transparent", border:"none", color:D.text, textAlign:"right" }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ height:1,background:D.border,margin:"10px 0 12px" }}/>
+
+                  {/* Preset list */}
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8 }}>Preset</div>
+                  <div style={{ display:"flex",flexDirection:"column",gap:3,marginBottom:12 }}>
+                    {RESOLUTIONS.map((r,i)=>(
+                      <React.Fragment key={i}>
+                        <button onClick={()=>{
+                          setSelRes(i); selResR.current=i;
+                          if (i>0 && r.w !== -1) applyResolutionMask(i);
+                          else if (i===0) { setCropMode("resolution"); cropModeR.current="resolution"; }
+                          // Custom: just select it — mask applied when user confirms dimensions
+                        }} style={{ display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",fontSize:12,background:selRes===i?`${D.accent}22`:D.surface2,border:`1px solid ${selRes===i?`${D.accent}55`:D.border}`,borderRadius:6,color:selRes===i?D.accent:D.textMuted,cursor:"pointer",fontFamily:"inherit",textAlign:"left" }}>
+                          <span>{r.label}</span>
+                          {r.tag && <span style={{ fontSize:10,padding:"1px 6px",background:selRes===i?`${D.accent}33`:"rgba(255,255,255,0.06)",borderRadius:4,color:selRes===i?D.accent:D.textDim }}>{r.tag}</span>}
+                        </button>
+                        {/* Custom preset: inline W × H inputs shown when selected */}
+                        {r.w===-1 && selRes===i && (
+                          <div style={{ display:"flex",alignItems:"center",gap:6,padding:"8px 8px",background:`${D.accent}0d`,border:`1px solid ${D.accent}22`,borderRadius:6,marginTop:2 }}>
+                            <input
+                              type="number" placeholder="W" min="1" value={customResW}
+                              onChange={e=>{ setCustomResW(e.target.value); customResR.current={w:e.target.value,h:customResR.current.h}; }}
+                              onKeyDown={e=>{ if(e.key==="Enter"){ const cw=parseInt(customResW),ch=parseInt(customResH); if(cw>0&&ch>0){ customResR.current={w:customResW,h:customResH}; applyResolutionMask(i); } } }}
+                              style={{ ...ni, flex:1, padding:"5px 6px", fontSize:12, textAlign:"center", borderRadius:5 }}
+                            />
+                            <span style={{ fontSize:12,color:D.textDim,flexShrink:0 }}>×</span>
+                            <input
+                              type="number" placeholder="H" min="1" value={customResH}
+                              onChange={e=>{ setCustomResH(e.target.value); customResR.current={w:customResR.current.w,h:e.target.value}; }}
+                              onKeyDown={e=>{ if(e.key==="Enter"){ const cw=parseInt(customResW),ch=parseInt(customResH); if(cw>0&&ch>0){ customResR.current={w:customResW,h:customResH}; applyResolutionMask(i); } } }}
+                              style={{ ...ni, flex:1, padding:"5px 6px", fontSize:12, textAlign:"center", borderRadius:5 }}
+                            />
+                            <button
+                              onClick={()=>{ const cw=parseInt(customResW),ch=parseInt(customResH); if(!cw||!ch||cw<1||ch<1) return; customResR.current={w:customResW,h:customResH}; applyResolutionMask(i); }}
+                              disabled={!parseInt(customResW)||!parseInt(customResH)}
+                              style={{ padding:"5px 10px",fontSize:11,fontWeight:500,background:parseInt(customResW)&&parseInt(customResH)?D.accent:D.surface2,border:"none",borderRadius:5,color:parseInt(customResW)&&parseInt(customResH)?"#fff":D.textDim,cursor:parseInt(customResW)&&parseInt(customResH)?"pointer":"default",fontFamily:"inherit",flexShrink:0 }}>
+                              Set
+                            </button>
+                          </div>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                  {selRes>0 && RESOLUTIONS[selRes].w>0 && (
+                    <div style={{ fontSize:11,color:D.textMuted,fontFamily:"'DM Mono',monospace",marginBottom:8,textAlign:"center" }}>{RESOLUTIONS[selRes].w}×{RESOLUTIONS[selRes].h}px · AR locked</div>
+                  )}
+                  {selRes>0 && RESOLUTIONS[selRes].w===-1 && parseInt(customResW)>0 && parseInt(customResH)>0 && (
+                    <div style={{ fontSize:11,color:D.textMuted,fontFamily:"'DM Mono',monospace",marginBottom:8,textAlign:"center" }}>{customResW}×{customResH}px · AR locked</div>
+                  )}
+
+                  <button onClick={applyCrop} disabled={cb.w<1||cb.h<1} style={{ width:"100%",padding:"8px",fontSize:13,fontWeight:500,background:cb.w<1?D.surface2:D.accent,border:"none",borderRadius:7,color:cb.w<1?D.textDim:"#fff",cursor:cb.w<1?"default":"pointer",marginBottom:7,fontFamily:"inherit" }}>Apply crop</button>
+                  {selRes>0 && (()=>{
+                    const res=RESOLUTIONS[selRes];
+                    const isCustom = res.w===-1;
+                    const rw = isCustom ? parseInt(customResW) : res.w;
+                    const rh = isCustom ? parseInt(customResH) : res.h;
+                    if (!rw || !rh) return null;
+                    const isRatio=rw<=100&&rh<=100;
+                    const iw=imgSize.w, ih=imgSize.h;
+                    let tw,th;
+                    if(isRatio){const ar=rw/rh;if(iw/ih>=ar){th=ih;tw=Math.round(ih*ar);}else{tw=iw;th=Math.round(iw/ar);}}
+                    else{tw=rw;th=rh;}
+                    return(
+                      <button onClick={applyCropAndResize} disabled={cb.w<1||cb.h<1||resizing} style={{ width:"100%",padding:"8px",fontSize:13,fontWeight:500,background:cb.w<1?"transparent":D.surface2,border:`1px solid ${cb.w<1?D.border:D.accent}`,borderRadius:7,color:cb.w<1?D.textDim:D.accent,cursor:cb.w<1?"default":"pointer",marginBottom:7,fontFamily:"inherit" }}>
+                        {resizing?"Scaling…":`Crop & Resize → ${tw}×${th}`}
+                      </button>
+                    );
+                  })()}
+                  {/* Reference image */}
+                  <div style={{ height:1,background:D.border,margin:"10px 0 10px" }}/>
+                  <div style={{ fontSize:10,color:D.textDim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8 }}>Reference image</div>
+                  {refImgSrc ? (
+                    <div style={{ display:"flex",alignItems:"center",gap:8,padding:"7px 8px",background:D.surface2,border:`1px solid ${D.border2}`,borderRadius:6,marginBottom:8 }}>
+                      <img src={refImgSrc} style={{ width:28,height:28,objectFit:"cover",borderRadius:4,flexShrink:0,border:`1px solid ${D.border2}` }}/>
+                      <div style={{ flex:1,minWidth:0 }}>
+                        <div style={{ fontSize:11,color:D.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{refImgName}</div>
+                        <div style={{ fontSize:10,color:D.textDim,fontFamily:"'DM Mono',monospace" }}>42% opacity overlay</div>
+                      </div>
+                      <button onClick={()=>{ refImgElRef.current=null; setRefImgSrc(null); setRefImgName(""); scheduleDraw(); }} style={{ width:20,height:20,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:`1px solid ${D.border2}`,borderRadius:4,color:D.textMuted,cursor:"pointer",fontSize:12,flexShrink:0 }}>✕</button>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize:11,color:D.textDim,lineHeight:1.6,padding:"8px 10px",background:"rgba(255,255,255,0.03)",border:`1px dashed ${D.border2}`,borderRadius:6,marginBottom:8,textAlign:"center" }}>
+                      Drop an image onto the canvas to use it as a framing reference
+                    </div>
+                  )}
+
+                  <button onClick={()=>{ const nb={x:0,y:0,w:imgSize.w,h:imgSize.h}; setCropBox(nb); cropBoxR.current=nb; forceTick(); }} style={{ width:"100%",padding:"7px",fontSize:12,background:"transparent",border:`1px solid ${D.border2}`,borderRadius:6,color:D.textMuted,cursor:"pointer",fontFamily:"inherit" }}>Reset selection</button>
+                </div>
+              )}
+            </div>
+            <div style={{ padding:13, marginTop:"auto" }}>
+              <button onClick={()=>fileRef.current.click()} style={{ width:"100%",padding:"7px",fontSize:12,background:"transparent",border:`1px solid ${D.border}`,borderRadius:6,color:D.textMuted,cursor:"pointer",fontFamily:"inherit" }}>Load new image</button>
+            </div>
+          </>}
+          </div>
+
+        {/* canvas column */}
+        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
+          <div
+            ref={wrapRef}
+            style={{ flex:1, position:"relative", overflow:"hidden", background:D.bg, cursor:canvasCursor }}
+            onDrop={handleDrop} onDragOver={handleDragO} onDragLeave={handleDragL}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={()=>{ handleMouseUp(); }}
+            onDoubleClick={()=>{ }}
+            onContextMenu={handleContextMenu}
+          >
+            {!imgSrc ? (
+              <div style={{ position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center" }}>
+                <div onClick={()=>fileRef.current.click()} style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:14,border:`1.5px dashed ${dropping?D.accent:D.border2}`,borderRadius:14,padding:"56px 72px",background:dropping?`${D.accent}0d`:D.surface,cursor:"pointer",transition:"all 0.15s" }}>
+                  <svg width="44" height="44" viewBox="0 0 44 44" fill="none" opacity={dropping?0.9:0.25}>
+                    <rect x="3" y="3" width="38" height="38" rx="7" stroke={D.text} strokeWidth="1.5"/>
+                    <circle cx="14" cy="14" r="3" stroke={D.text} strokeWidth="1.5"/>
+                    <path d="M3 28l11-10 8 8 6-6 13 13" stroke={D.text} strokeWidth="1.5" fill="none"/>
+                  </svg>
+                  <div style={{ textAlign:"center" }}>
+                    <p style={{ fontWeight:500,fontSize:15,margin:"0 0 5px",color:dropping?D.accent:D.text }}>{dropping?"Drop to open":"Drop an image here"}</p>
+                    <p style={{ fontSize:12,color:D.textMuted,margin:0 }}>or click to browse — PNG, JPG, GIF, WebP</p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <canvas ref={cvRef} width={cvSize.w} height={cvSize.h}
+                  style={{ position:"absolute", inset:0, width:"100%", height:"100%", display:"block" }}/>
+
+                {/* Split compare bar */}
+                {splitCompare && (tool==="adjust"||tool==="resize") && imgSrc && (()=>{
+                  const sx = splitPos * 100;
+                  return (
+                    <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",overflow:"visible" }}>
+                      {/* Left label */}
+                      <text x={`${Math.max(sx-2,1)}%`} y="20" textAnchor="end" fontSize="11" fontFamily="'DM Sans',sans-serif" fill="rgba(255,255,255,0.7)" style={{ userSelect:"none" }}>Before</text>
+                      {/* Right label */}
+                      <text x={`${Math.min(sx+2,99)}%`} y="20" textAnchor="start" fontSize="11" fontFamily="'DM Sans',sans-serif" fill="rgba(255,255,255,0.7)" style={{ userSelect:"none" }}>After</text>
+                      {/* Divider line */}
+                      <line x1={`${sx}%`} y1="0" x2={`${sx}%`} y2="100%" stroke="rgba(255,255,255,0.9)" strokeWidth="1.5"/>
+                      {/* Handle */}
+                      <g transform={`translate(${sx*cvSize.w/100}, ${cvSize.h/2})`} style={{ pointerEvents:"all", cursor:"col-resize" }}>
+                        <circle r="18" fill="rgba(20,20,25,0.75)" stroke="rgba(255,255,255,0.85)" strokeWidth="1.5"/>
+                        {/* Arrow icons */}
+                        <path d="M-9 0l-5-5v10z" fill="rgba(255,255,255,0.9)"/>
+                        <path d="M9 0l5-5v10z" fill="rgba(255,255,255,0.9)"/>
+                        <line x1="-2" y1="-6" x2="-2" y2="6" stroke="rgba(255,255,255,0.5)" strokeWidth="1"/>
+                        <line x1="2" y1="-6" x2="2" y2="6" stroke="rgba(255,255,255,0.5)" strokeWidth="1"/>
+                      </g>
+                    </svg>
+                  );
+                })()}/>
+
+                {tool==="crop" && imgSrc && rotation===0 && (
+                  <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",overflow:"visible" }}>
+                    <defs>
+                      <mask id="crmask">
+                        <rect width="100%" height="100%" fill="white"/>
+                        <rect x={sb.x} y={sb.y} width={sb.w} height={sb.h} fill="black"/>
+                      </mask>
+                    </defs>
+                    <rect width="100%" height="100%" fill={lightMode?"rgba(255,255,255,0.55)":"rgba(0,0,0,0.55)"} mask="url(#crmask)"/>
+                    <rect x={sb.x} y={sb.y} width={sb.w} height={sb.h} fill="none" stroke={D.accent} strokeWidth="1.5"/>
+                    {[1,2].map(i=>(
+                      <g key={i}>
+                        <line x1={sb.x+sb.w*i/3} y1={sb.y} x2={sb.x+sb.w*i/3} y2={sb.y+sb.h} stroke="rgba(255,255,255,0.15)" strokeWidth="0.75"/>
+                        <line x1={sb.x} y1={sb.y+sb.h*i/3} x2={sb.x+sb.w} y2={sb.y+sb.h*i/3} stroke="rgba(255,255,255,0.15)" strokeWidth="0.75"/>
+                      </g>
+                    ))}
+                    {[[sb.x,sb.y,1,1],[sb.x+sb.w,sb.y,-1,1],[sb.x,sb.y+sb.h,1,-1],[sb.x+sb.w,sb.y+sb.h,-1,-1]].map(([cx,cy,sx2,sy2],i)=>(
+                      <g key={i}>
+                        <line x1={cx} y1={cy} x2={cx+sx2*10} y2={cy} stroke={D.accent} strokeWidth="2.5"/>
+                        <line x1={cx} y1={cy} x2={cx} y2={cy+sy2*10} stroke={D.accent} strokeWidth="2.5"/>
+                      </g>
+                    ))}
+                    {hss.map(([name,hx,hy])=>(
+                      <rect key={name} x={hx-5} y={hy-5} width={10} height={10} fill={D.surface} stroke={D.accent} strokeWidth="1.2" rx="2" style={{ pointerEvents:"all",cursor:`${name}-resize` }}/>
+                    ))}
+                  </svg>
+                )}
+
+                {tool==="rotate" && imgSrc && (
+                  <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",overflow:"visible" }}>
+                    {/* outer guide circle */}
+                    <circle cx={rotCx} cy={rotCy} r={rotHandleR}
+                      fill="none" stroke={D.accent} strokeWidth="1" strokeDasharray="4 4" opacity="0.35"/>
+                    {/* center dot */}
+                    <circle cx={rotCx} cy={rotCy} r="4" fill={D.accent} opacity="0.7"/>
+                    <circle cx={rotCx} cy={rotCy} r="1.5" fill="#fff"/>
+                    {/* line from center to handle */}
+                    <line x1={rotCx} y1={rotCy} x2={rotHx} y2={rotHy}
+                      stroke={D.accent} strokeWidth="1.5" opacity="0.6"/>
+                    {/* angle arc */}
+                    {rotation!==0 && (
+                      <path
+                        d={`M ${arcStartX} ${arcStartY} A ${rotArcR} ${rotArcR} 0 ${arcLarge} ${arcSweep} ${arcEndX} ${arcEndY}`}
+                        fill="none" stroke={D.accent} strokeWidth="2" opacity="0.5"/>
+                    )}
+                    {/* handle circle — the grab point */}
+                    <circle cx={rotHx} cy={rotHy} r="10"
+                      fill={rotationDragging ? D.accent : D.surface2}
+                      stroke={D.accent} strokeWidth="2" opacity={rotationDragging?1:0.85}/>
+                    {/* handle rotation arrow icon */}
+                    <g transform={`translate(${rotHx},${rotHy}) rotate(${rotation})`}>
+                      <path d="M-4 0 A4 4 0 1 1 1 3.5" fill="none" stroke={rotationDragging?"#fff":D.accent} strokeWidth="1.5" strokeLinecap="round"/>
+                      <polygon points="2,1 4,5 0,4" fill={rotationDragging?"#fff":D.accent}/>
+                    </g>
+                    {/* angle label */}
+                    {rotation!==0 && (
+                      <text x={rotCx} y={rotCy-rotHandleR-10}
+                        textAnchor="middle" fontSize="12" fontFamily="'DM Mono',monospace"
+                        fill={D.accent} opacity="0.9">{rotation}°</text>
+                    )}
+                  </svg>
+                )}
+
+              </>
+            )}
+            {imgSrc && dropping && (
+              <div style={{ position:"absolute",inset:0,background:"rgba(0,0,0,0.65)",display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none" }}>
+                <p style={{ color:D.text,fontSize:16,fontWeight:500 }}>
+                  {tool==="crop" ? "Drop as reference image" : "Drop to replace image"}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {showExportMenu && <div style={{ position:"fixed",inset:0,zIndex:299,background:"rgba(0,0,0,0.4)" }} onClick={()=>setShowExportMenu(false)}/>}
+      {toast && <div style={{ position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:D.surface2,border:`1px solid ${D.border2}`,color:D.text,padding:"7px 18px",borderRadius:99,fontSize:12,fontWeight:500,pointerEvents:"none",zIndex:9999,whiteSpace:"nowrap" }}>{toast}</div>}
+      <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }} onChange={handleFile}/>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<ImageEditor />);
+</script>
+</body>
+</html>
