@@ -1,6 +1,6 @@
 # Pixlite
 
-**Pixlite** is a standalone, browser-based image editor packaged as a single HTML file. No server, no install, no account — just open [pixlite.html](pixlite.html) in any modern browser and start editing.
+**Pixlite** is a standalone, browser-based image editor packaged as a single HTML file. No server, no install, no account — just open [index.html](index.html) in any modern browser and start editing.
 
 ## Features
 
@@ -21,12 +21,12 @@
 
 - React 18 (UMD from CDN) + Babel Standalone — JSX is transpiled inline in the browser.
 - HTML5 Canvas 2D for all pixel work; SVG overlays for crop handles, rotation indicator, and the split bar.
-- One file, no build step: the entire app is [pixlite.html](pixlite.html).
+- One file, no build step: the entire app is [index.html](index.html).
 
 ## Usage
 
 1. Clone or download this repo.
-2. Open `pixlite.html` in any modern browser.
+2. Open `index.html` in any modern browser — or point a static host (e.g. GitHub Pages) at the folder and it loads automatically.
 3. Drop an image onto the canvas (or click **Load new image**).
 
 Works fully offline after the first load (CDN bundles are cached by the browser).
