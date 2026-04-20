@@ -9,7 +9,7 @@ Tech Stack
 - Babel Standalone — JSX is transpiled inline in the browser (no pre-build step, no separate App.jsx)
 - HTML5 Canvas 2D for all image rendering and pixel manipulation
 - SVG overlays for interactive UI elements (crop handles, rotation indicator, split bar)
-- Everything lives in a single `pixlite.html` file (script tag with `type="text/babel"`)
+- Everything lives in a single `index.html` file (script tag with `type="text/babel"`). The filename is `index.html` so the app auto-loads when the folder is opened in a browser or served as a static site (e.g. GitHub Pages)
 
 Current Features
 
